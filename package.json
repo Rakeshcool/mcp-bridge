@@ -1,0 +1,23 @@
+{
+  "name": "llama-mcp-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Local MCP <-> llama.cpp bridge: owns MCP servers and injects their tools into any OpenAI-compatible llama-server request.",
+  "scripts": {
+    "start": "node src/server/index.ts",
+    "mcp": "node scripts/mcp.mjs",
+    "dev": "node --watch src/server/index.ts",
+    "build": "vite build",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "^6.2.1",
+    "@tailwindcss/vite": "^4.1.14",
+    "@types/node": "^24.8.1",
+    "svelte": "^5.39.9",
+    "tailwindcss": "^4.1.14",
+    "typescript": "^5.9.3",
+    "vite": "^7.1.9"
+  }
+}

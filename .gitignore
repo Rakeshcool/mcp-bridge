@@ -1,0 +1,13 @@
+node_modules/
+dist/
+data/
+*.log
+
+# local packaging / scratch copies
+copy_mcp/
+.pkg/
+.pkgtest/
+.freebuff/
+
+# release artifacts
+*.zip
