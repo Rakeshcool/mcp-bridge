@@ -34,11 +34,17 @@ export function normalizeToolResult(result: unknown): ToolResult {
   const payload = (result ?? {}) as Record<string, unknown>;
   const blocks = Array.isArray(payload.content) ? payload.content : [];
   const parts: string[] = [];
+  const images: { mimeType: string; data: string }[] = [];
   for (const block of blocks) {
     if (!block || typeof block !== "object") continue;
     const entry = block as Record<string, unknown>;
     if (entry.type === "text" && typeof entry.text === "string") parts.push(entry.text);
-    else if (entry.type === "image") parts.push("[image content omitted]");
+    else if (entry.type === "image" && typeof entry.data === "string") {
+      const mimeType = typeof entry.mimeType === "string" ? entry.mimeType : "image/png";
+      images.push({ mimeType, data: entry.data });
+      const kb = Math.round((entry.data.length * 3) / 4 / 1024);
+      parts.push(`[image ${mimeType}, ${kb} KB]`);
+    } else if (entry.type === "image") parts.push("[image content omitted]");
     else if (entry.type === "resource") parts.push("[resource content omitted]");
     else if (typeof entry.text === "string") parts.push(entry.text);
   }
@@ -51,7 +57,11 @@ export function normalizeToolResult(result: unknown): ToolResult {
       text = "(empty result)";
     }
   }
-  return { text, isError: payload.isError === true };
+  return {
+    text,
+    isError: payload.isError === true,
+    ...(images.length ? { images } : {}),
+  };
 }
 
 export function errorMessage(error: unknown): string {

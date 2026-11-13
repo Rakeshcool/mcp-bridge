@@ -133,7 +133,7 @@
       <div class="grid grid-cols-2 gap-3">
         <div class="col-span-2">
           <label class={label} for="server-name">Name</label>
-          <input id="server-name" class={field} bind:value={name} placeholder="DaVinci Resolve" />
+          <input id="server-name" class={field} bind:value={name} placeholder="My MCP server" />
         </div>
         <div class="col-span-2">
           <label class={label} for="server-description">Description</label>

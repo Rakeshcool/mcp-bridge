@@ -14,6 +14,7 @@ import type {
   ServerRuntimeView,
   StdioConnection,
   ToolDef,
+  ToolResult,
   ToolView,
   Visibility,
 } from "./types.ts";
@@ -439,7 +440,7 @@ export class Registry {
     this.runtime(id).logs.clear();
   }
 
-  async callTool(serverId: string, toolName: string, args: unknown, timeoutMs: number): Promise<{ text: string; isError: boolean }> {
+  async callTool(serverId: string, toolName: string, args: unknown, timeoutMs: number): Promise<ToolResult> {
     const runtime = this.runtime(serverId);
     if (!runtime.client || runtime.status !== "connected") {
       throw new Error(`MCP_SERVER_NOT_CONNECTED: ${serverId} is not connected`);

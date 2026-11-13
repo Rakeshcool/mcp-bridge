@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Local MCP <-> llama.cpp bridge: owns MCP servers and injects their tools into any OpenAI-compatible llama-server request.",
+  "description": "Local MCP bridge: owns any MCP servers (stdio or Streamable HTTP) and injects their tools into any OpenAI-compatible llama-server request.",
   "scripts": {
     "start": "node src/server/index.ts",
     "mcp": "node scripts/mcp.mjs",

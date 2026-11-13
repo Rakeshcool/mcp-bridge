@@ -1,4 +1,5 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import fs from "node:fs";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import type { MCPServerConfig, StdioConnection, ToolDef, ToolResult } from "../types.ts";
 import { initializeParams, normalizeToolResult } from "./client.ts";
@@ -7,15 +8,53 @@ import type { MCPClient, MCPClientOptions } from "./client.ts";
 const isWindows = process.platform === "win32";
 
 /**
- * Only Windows shell scripts need cmd.exe. `.exe` and PATH-resolved commands are always
- * launched directly with an argument array so no user value is ever concatenated into a
- * shell command string.
+ * Windows only: find a bare command on PATH (`npx`, `uvx`, `bunx` …). Without this a
+ * launcher that ships as a `.cmd` shim fails with `spawn npx ENOENT`, which is the
+ * common case for npx-style MCP servers.
  */
-function resolveSpawn(command: string, args: string[]): { file: string; args: string[] } {
-  if (isWindows && /\.(cmd|bat)$/i.test(command)) {
-    return { file: process.env.ComSpec || "cmd.exe", args: ["/d", "/s", "/c", command, ...args] };
+function whichWindows(command: string): string | null {
+  const listed = spawnSync("where", [command], { encoding: "utf8", windowsHide: true });
+  if (listed.status !== 0 || !listed.stdout) return null;
+  const candidates = listed.stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && fs.existsSync(line));
+  if (!candidates.length) return null;
+  // `where npx` also lists an extensionless shell script that Node cannot execute.
+  const rank = (file: string) => (/\.exe$/i.test(file) ? 0 : /\.(cmd|bat)$/i.test(file) ? 1 : 2);
+  return candidates.sort((a, b) => rank(a) - rank(b))[0];
+}
+
+/**
+ * Batch files need cmd.exe; `.exe` and PATH-resolved binaries launch directly with an
+ * argument array, so no user value is ever concatenated into a shell command string.
+ */
+function quoteWindowsArg(value: string): string {
+  return /[ \t"&|<>^]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
+}
+
+function resolveSpawn(command: string, args: string[]): { file: string; args: string[]; verbatim?: boolean } {
+  if (!isWindows) return { file: command, args };
+
+  let target = command;
+  const isPath = /^[A-Za-z]:|^\\\\|^\//.test(command) || command.includes("/") || command.includes("\\");
+  const hasExtension = /\.[A-Za-z0-9]+$/.test(command);
+  if (!isPath && !hasExtension) {
+    const found = whichWindows(command);
+    if (found) target = found;
   }
-  return { file: command, args };
+
+  if (/\.(cmd|bat)$/i.test(target)) {
+    // cmd /s needs the whole command in one outer pair of quotes; passing the path
+    // pre-quoted as a separate argv entry gets double-quoted by Node and fails.
+    const line = `"${target}" ${args.map(quoteWindowsArg).join(" ")}`.trim();
+    return {
+      file: process.env.ComSpec || "cmd.exe",
+      args: ["/d", "/s", "/c", `"${line}"`],
+      verbatim: true,
+    };
+  }
+  return { file: target, args };
 }
 
 interface Pending {
@@ -56,7 +95,7 @@ export class StdioClient implements MCPClient {
     const command = conn.command;
     if (!command) throw new Error("MCP_INVALID_CONFIG: command is required");
 
-    const { file, args } = resolveSpawn(command, conn.args ?? []);
+    const { file, args, verbatim } = resolveSpawn(command, conn.args ?? []);
     const env: Record<string, string> = {};
     for (const [key, value] of Object.entries(process.env)) {
       if (typeof value === "string") env[key] = value;
@@ -72,6 +111,7 @@ export class StdioClient implements MCPClient {
         cwd: conn.cwd || undefined,
         env,
         windowsHide: true,
+        windowsVerbatimArguments: verbatim === true,
         stdio: ["pipe", "pipe", "pipe"],
       });
     } catch (error) {

@@ -7,12 +7,18 @@
  * so stdout stays parseable.
  *
  *   node scripts/mcp.mjs up                 # start the bridge (idempotent) + connect servers
+ *   node scripts/mcp.mjs servers            # which servers are configured and up?
  *   node scripts/mcp.mjs tools              # what can I call?
  *   node scripts/mcp.mjs describe <tool>    # what arguments does it take?
  *   node scripts/mcp.mjs call <tool> '{"a":1}'
- *   node scripts/mcp.mjs script probe.py    # python into Resolve, via the run_script tool
+ *   node scripts/mcp.mjs script probe.py    # pipe a file into any code-execution tool
+ *   node scripts/mcp.mjs recipe <name> spec.json   # bundled multi-step workflow
  *   node scripts/mcp.mjs status
  *   node scripts/mcp.mjs down
+ *
+ * Nothing here is specific to one product: tools are discovered from whatever
+ * MCP servers are configured, and the CLI learns their argument names from
+ * their schemas instead of assuming any vendor.
  *
  * No dependencies. Node 18+ (fetch/AbortSignal.timeout).
  */
@@ -26,8 +32,8 @@ const DATA_DIR = path.join(ROOT, "data");
 const PID_FILE = path.join(DATA_DIR, "bridge.pid");
 const LOG_FILE = path.join(DATA_DIR, "bridge.log");
 const SERVER_ENTRY = path.join(ROOT, "src", "server", "index.ts");
+const RECIPES_DIR = path.join(ROOT, "recipes");
 const DEFAULT_PORT = 7800;
-const DEFAULT_SCRIPT_TOOL = "davinci-resolve__run_script";
 
 const HELP = `mcp.mjs — drive the MCP bridge from any agent
 
@@ -42,14 +48,20 @@ COMMANDS
   tools                  List callable tools as JSON.
   describe <tool>        Show one tool's description and input schema.
   call <tool> [args]     Call a tool. args is a JSON object, or "-" to read stdin.
-  script <file|->        Run Python inside Resolve through ${DEFAULT_SCRIPT_TOOL}.
+  servers                Configured servers with transport, status and tool count.
+  connect <serverId>     Connect one server (up connects every enabled one).
+  script <file|->        Send a file to a code-execution tool. Picks the tool from
+                         --tool, or the only code tool on --server.
+  recipe <name> [spec]   Run recipes/<name>/kit.py through the server its
+                         recipe.json names, with the spec as run(SPEC).
 
 OPTIONS
   --port <n>             Bridge port (default ${DEFAULT_PORT}, or $PORT).
   --base <url>           Full base URL; overrides --port.
   --timeout <ms>         Per-request timeout (default 120000).
   --no-connect           With "up": do not connect servers.
-  --tool <name>          With "script": tool to pipe the code into.
+  --server <id>          With "script": limit auto-detection to one server.
+  --tool <name>          Exposed name (serverId__tool) or bare tool name.
   --help                 This text.
 
 EXIT CODES
@@ -57,10 +69,11 @@ EXIT CODES
 
 EXAMPLES
   node scripts/mcp.mjs up
+  node scripts/mcp.mjs servers
   node scripts/mcp.mjs tools | jq -r '.[].exposedName'
-  node scripts/mcp.mjs call davinci-resolve__get_resolve_status
-  node scripts/mcp.mjs call davinci-resolve__list_luts '{}'
-  node scripts/mcp.mjs script ./probe.py
+  node scripts/mcp.mjs describe <exposedName>
+  node scripts/mcp.mjs script ./probe.py --server <serverId>
+  node scripts/mcp.mjs recipe <name> <spec.json>
 `;
 
 function fail(message, code = 1, extra = {}) {
@@ -73,7 +86,7 @@ function note(message) {
 }
 
 function parseArgs(argv) {
-  const opts = { port: Number(process.env.PORT) || DEFAULT_PORT, base: null, timeout: 120000, connect: true, tool: DEFAULT_SCRIPT_TOOL };
+  const opts = { port: Number(process.env.PORT) || DEFAULT_PORT, base: null, timeout: 120000, connect: true, tool: null, server: null };
   const positional = [];
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -83,6 +96,7 @@ function parseArgs(argv) {
     else if (arg === "--timeout") opts.timeout = Number(argv[++i]) || 120000;
     else if (arg === "--no-connect") opts.connect = false;
     else if (arg === "--tool") opts.tool = argv[++i];
+    else if (arg === "--server") opts.server = argv[++i];
     else if (arg.startsWith("-") && arg !== "-") fail(`Unknown option: ${arg}`, 2);
     else positional.push(arg);
   }
@@ -333,9 +347,29 @@ function unwrap(value) {
   }
 }
 
+// Image blocks (screenshots, scene captures) arrive as data URLs. Write them next
+// to the project so the caller gets files it can open, not base64 in a terminal.
+function saveImages(name, payload) {
+  const images = Array.isArray(payload.images) ? payload.images : [];
+  if (!images.length) return [];
+  const dir = path.join(DATA_DIR, "images");
+  fs.mkdirSync(dir, { recursive: true });
+  const saved = [];
+  images.forEach((image, index) => {
+    const match = /^data:([^;]+);base64,(.*)$/s.exec(image?.dataUrl ?? "");
+    if (!match) return;
+    const ext = match[1].split("/")[1]?.replace("jpeg", "jpg") ?? "png";
+    const file = path.join(dir, `${name.replace(/[^A-Za-z0-9_.-]/g, "_")}-${index + 1}.${ext}`);
+    fs.writeFileSync(file, Buffer.from(match[2], "base64"));
+    saved.push(file);
+  });
+  return saved;
+}
+
 async function callTool(opts, name, args) {
   const payload = await request(opts, "POST", `/api/tools/${encodeURIComponent(name)}/call`, args);
   const result = payload.result;
+  const images = saveImages(name, payload);
   console.log(
     JSON.stringify(
       {
@@ -345,6 +379,7 @@ async function callTool(opts, name, args) {
         durationMs: payload.durationMs,
         isError: Boolean(payload.isError),
         result: unwrap(result),
+        ...(images.length ? { images } : {}),
         // Tools such as run_script also capture stdout; keep it visible.
         ...(result && typeof result === "object" && result.output !== undefined ? { output: unwrap(result.output) } : {}),
       },
@@ -353,6 +388,7 @@ async function callTool(opts, name, args) {
     ),
   );
   if (payload.isError) process.exitCode = 1;
+  return payload;
 }
 
 async function commandCall(opts) {
@@ -367,9 +403,54 @@ async function commandCall(opts) {
   await callTool(opts, name, args);
 }
 
+// Code tools name their payload differently (script, code, source, command…).
+// Read it from the tool's own schema instead of assuming a vendor's convention.
+function codeField(schema) {
+  const properties = schema?.properties && typeof schema.properties === "object" ? Object.keys(schema.properties) : [];
+  for (const key of ["script", "code", "source", "python", "lua", "command", "input"]) {
+    if (properties.includes(key)) return key;
+  }
+  return "script";
+}
+
+async function resolveTool(opts, raw) {
+  const state = await loadCatalog(opts);
+  const catalog = state.catalog ?? [];
+  const exact = catalog.find((entry) => entry.exposedName === raw);
+  if (exact) return exact;
+  const matches = catalog.filter((entry) => entry.toolName === raw || entry.exposedName.endsWith(`__${raw}`));
+  if (matches.length === 1) return matches[0];
+  if (matches.length > 1) {
+    fail(`Tool "${raw}" exists on several servers; use its exposed name`, 1, {
+      candidates: matches.map((entry) => entry.exposedName),
+    });
+  }
+  fail(`Unknown tool: ${raw}`, 1, {
+    hint: "node scripts/mcp.mjs tools lists every exposed name",
+    tools: catalog.map((entry) => entry.exposedName).slice(0, 60),
+  });
+  return null;
+}
+
+async function autoTool(opts) {
+  const state = await loadCatalog(opts);
+  const pool = (state.catalog ?? []).filter((entry) => !opts.server || entry.serverId === opts.server);
+  const codeTools = pool.filter((entry) => /(run[_-]?script|execute|run[_-]?python|python|eval|shell|exec)/i.test(entry.toolName));
+  if (codeTools.length === 1) return codeTools[0];
+  if (codeTools.length > 1) {
+    fail("Several code-execution tools match; pass --tool <exposedName>", 1, {
+      candidates: codeTools.map((entry) => entry.exposedName),
+    });
+  }
+  fail("No code-execution tool found; pass --tool <exposedName>", 1, {
+    tools: pool.map((entry) => entry.exposedName),
+  });
+  return null;
+}
+
 async function commandScript(opts) {
   const target = opts.rest[0];
-  if (!target) fail("Usage: node scripts/mcp.mjs script <file.py|->", 2);
+  if (!target) fail("Usage: node scripts/mcp.mjs script <file|-> [--tool <name>] [--server <id>]", 2);
   let code;
   try {
     code = target === "-" ? fs.readFileSync(0, "utf8") : fs.readFileSync(path.resolve(process.cwd(), target), "utf8");
@@ -377,7 +458,142 @@ async function commandScript(opts) {
     fail(`Cannot read script: ${error.message}`, 2);
   }
   if (!code.trim()) fail("Script is empty", 2);
-  await callTool(opts, opts.tool, { script: code, timeout: Math.min(Math.floor(opts.timeout / 1000), 60) });
+  const entry = opts.tool ? await resolveTool(opts, opts.tool) : await autoTool(opts);
+  await callTool(opts, entry.exposedName, {
+    [codeField(entry.inputSchema)]: code,
+    timeout: Math.min(Math.floor(opts.timeout / 1000), 60),
+  });
+}
+
+async function commandServers(opts) {
+  const state = await loadCatalog(opts);
+  const servers = (state.servers ?? []).map((server) => ({
+    id: server.id,
+    name: server.name,
+    enabled: server.enabled,
+    transport: server.transport,
+    status: server.runtime?.status ?? "stopped",
+    tools: server.runtime?.toolCount ?? 0,
+    lastError: server.runtime?.lastError ?? null,
+  }));
+  console.log(JSON.stringify(servers, null, 2));
+  if (!servers.length) note("No servers yet: add one in the panel, POST /api/servers, or copy from servers.example.json.");
+}
+
+async function commandConnect(opts) {
+  const id = opts.rest[0];
+  if (!id) fail("Usage: node scripts/mcp.mjs connect <serverId>", 2);
+  const result = await request(opts, "POST", `/api/servers/${encodeURIComponent(id)}/connect`);
+  console.log(
+    JSON.stringify({ ok: true, id, status: result?.runtime?.status ?? "unknown", tools: result?.runtime?.toolCount ?? 0 }, null, 2),
+  );
+}
+
+// Replace ${key} in step arguments with values from the spec JSON.
+function substitute(value, spec) {
+  if (typeof value === "string") {
+    return value.replace(/\$\{([A-Za-z0-9_.-]+)\}/g, (match, key) =>
+      Object.prototype.hasOwnProperty.call(spec, key) ? String(spec[key]) : match,
+    );
+  }
+  if (Array.isArray(value)) return value.map((entry) => substitute(entry, spec));
+  if (value && typeof value === "object") {
+    const out = {};
+    for (const [key, entry] of Object.entries(value)) out[key] = substitute(entry, spec);
+    return out;
+  }
+  return value;
+}
+
+// A recipe is any folder under recipes/ with a recipe.json. It either:
+//   * lists `steps` — plain tool calls, for servers with no code tool, or
+//   * names a `tool` plus a Python kit exporting run(SPEC), for scripted work.
+async function commandRecipe(opts) {
+  const name = opts.rest[0];
+  if (!name) fail("Usage: node scripts/mcp.mjs recipe <name> [spec.json|-]", 2);
+  const dir = path.join(RECIPES_DIR, name);
+  const manifestPath = path.join(dir, "recipe.json");
+  if (!fs.existsSync(manifestPath)) {
+    const available = fs.existsSync(RECIPES_DIR)
+      ? fs.readdirSync(RECIPES_DIR, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name)
+      : [];
+    fail(`Unknown recipe: ${name}`, 2, { available });
+  }
+  let manifest;
+  try {
+    manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+  } catch (error) {
+    fail(`recipes/${name}/recipe.json is not valid JSON: ${error.message}`, 1);
+  }
+  // Read the spec once: kit mode embeds it, step mode substitutes ${key}.
+  const specPath = opts.rest[1];
+  let specRaw = null;
+  let spec = {};
+  if (specPath) {
+    try {
+      specRaw = specPath === "-" ? fs.readFileSync(0, "utf8") : fs.readFileSync(path.resolve(process.cwd(), specPath), "utf8");
+    } catch (error) {
+      fail(`Cannot read spec: ${error.message}`, 2);
+    }
+    try {
+      spec = JSON.parse(specRaw) ?? {};
+    } catch (error) {
+      fail(`Spec must be JSON: ${error.message}`, 2);
+    }
+  }
+
+  if (Array.isArray(manifest.steps)) {
+    if (!manifest.steps.length) fail(`recipes/${name}/recipe.json has no steps`, 1);
+    // Resolve every placeholder before touching a server, so a missing spec value is
+    // reported as such instead of as a confusing tool error.
+    const prepared = manifest.steps.map((step) => ({ step, args: substitute(step.args ?? {}, spec) }));
+    const missing = [
+      ...new Set(
+        prepared.flatMap(({ args }) =>
+          [...JSON.stringify(args).matchAll(/\$\{([A-Za-z0-9_.-]+)\}/g)].map((match) => match[1]),
+        ),
+      ),
+    ];
+    if (missing.length) {
+      fail(`Recipe ${name} needs spec value(s): ${missing.join(", ")}`, 2, {
+        hint: "pass a spec file: node scripts/mcp.mjs recipe <name> <spec.json>",
+      });
+    }
+
+    const steps = [];
+    for (const { step, args } of prepared) {
+      const entry = await resolveTool(opts, step.tool);
+      const payload = await request(opts, "POST", `/api/tools/${encodeURIComponent(entry.exposedName)}/call`, args);
+      const stepResult = {
+        step: step.name ?? entry.toolName,
+        tool: entry.exposedName,
+        ok: !payload.isError,
+        durationMs: payload.durationMs ?? null,
+        result: unwrap(payload.result),
+      };
+      steps.push(stepResult);
+      if (!stepResult.ok && step.continueOnError !== true) break;
+    }
+    const ok = steps.length > 0 && steps.every((step) => step.ok);
+    console.log(JSON.stringify({ ok, mode: "steps", recipe: name, steps }, null, 2));
+    if (!ok) process.exitCode = 1;
+    return;
+  }
+
+  if (!manifest.tool) fail(`recipes/${name}/recipe.json needs a "tool" or "steps"`, 1);
+  const kitPath = path.join(dir, manifest.kit ?? "kit.py");
+  if (!fs.existsSync(kitPath)) fail(`Recipe ${name} is missing ${path.basename(kitPath)}`, 1);
+  let code = fs.readFileSync(kitPath, "utf8");
+  code += specRaw ? `\nSPEC = json.loads(${JSON.stringify(specRaw)})\nresult = run(SPEC)\n` : "\nresult = run()\n";
+  const entry = await resolveTool(opts, manifest.tool);
+  const payload = await callTool(opts, entry.exposedName, {
+    [codeField(entry.inputSchema)]: code,
+    timeout: Math.min(Math.floor(opts.timeout / 1000), 60),
+  });
+  // A recipe that ran but did not verify its own work is a failure.
+  const body = unwrap(payload?.result);
+  const outcome = body && typeof body === "object" ? (body.result ?? body) : null;
+  if (outcome && outcome.ok === false) process.exitCode = 1;
 }
 
 async function main() {
@@ -400,6 +616,12 @@ async function main() {
       return commandCall(opts);
     case "script":
       return commandScript(opts);
+    case "servers":
+      return commandServers(opts);
+    case "connect":
+      return commandConnect(opts);
+    case "recipe":
+      return commandRecipe(opts);
     default:
       process.stderr.write(HELP);
       fail(opts.command ? `Unknown command: ${opts.command}` : "No command given", 2);

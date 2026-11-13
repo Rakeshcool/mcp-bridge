@@ -367,6 +367,16 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
           durationMs: Date.now() - startedAt,
           isError: result.isError,
           result: result.text,
+          // Image blocks are returned as data URLs so a CLI, panel or model can
+          // actually look at them instead of a "[image omitted]" placeholder.
+          ...(result.images?.length
+            ? {
+                images: result.images.map((image: { mimeType: string; data: string }) => ({
+                  mimeType: image.mimeType,
+                  dataUrl: `data:${image.mimeType};base64,${image.data}`,
+                })),
+              }
+            : {}),
         });
         return;
       }

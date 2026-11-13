@@ -6,8 +6,6 @@ import type { BridgeSettings, MCPConfigFile, MCPServerConfig } from "./types.ts"
 const SERVERS_FILE = path.join(DATA_DIR, "servers.json");
 const BRIDGE_FILE = path.join(DATA_DIR, "bridge.json");
 
-export const RESOLVE_MCP_PATH = "D:\\games\\Blackmagic Design\\DaVinci Resolve\\ResolveMCP.exe";
-
 function atomicWrite(file: string, data: unknown): void {
   ensureDataDir();
   const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
@@ -15,31 +13,13 @@ function atomicWrite(file: string, data: unknown): void {
   fs.renameSync(tmp, file);
 }
 
+/**
+ * First run starts with no servers: this bridge is not tied to any product.
+ * Add one from the panel, `POST /api/servers`, or by copying entries out of
+ * `servers.example.json`.
+ */
 function seedConfig(): MCPConfigFile {
-  const now = new Date().toISOString();
-  const resolve: MCPServerConfig = {
-    id: "davinci-resolve",
-    name: "DaVinci Resolve",
-    description:
-      "Blackmagic's official DaVinci Resolve MCP server. Automates Resolve's pages through its Python scripting API, manages LUTs and DCTLs, and reports Resolve's status.",
-    enabled: true,
-    visibility: "normal",
-    transport: "stdio",
-    connection: {
-      command: RESOLVE_MCP_PATH,
-      args: [],
-      env: { BMD_IS_MCPB: "1" },
-      secretEnv: [],
-    },
-    startupTimeoutMs: 30000,
-    toolTimeoutMs: 60000,
-    idleTimeoutMs: 300000,
-    restartPolicy: "on_failure",
-    tools: {},
-    createdAt: now,
-    updatedAt: now,
-  };
-  return { version: 1, servers: [resolve] };
+  return { version: 1, servers: [] };
 }
 
 /** Drops entries a hand-edited config could not run, instead of crashing the panel. */

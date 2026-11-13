@@ -245,7 +245,7 @@
     {#if messages.length === 0}
       <div class="rounded-xl border border-dashed border-edge-2 px-4 py-10 text-center text-sm text-dim">
         {#if mode === "model"}
-          Ask something that needs a tool — for example “Is DaVinci Resolve running?”
+          Ask something that needs a tool — what works depends on the servers you connected
         {:else}
           Pick a tool and pass its arguments as JSON, for example <code class="mono">{ "{}" }</code>.
         {/if}

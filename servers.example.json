@@ -1,0 +1,61 @@
+{
+  "version": 1,
+  "servers": [
+    {
+      "id": "filesystem",
+      "name": "Filesystem",
+      "description": "Reference MCP server that reads and writes files in a directory you choose.",
+      "enabled": true,
+      "visibility": "normal",
+      "transport": "stdio",
+      "connection": {
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-filesystem", "D:/"],
+        "env": {},
+        "secretEnv": []
+      },
+      "startupTimeoutMs": 60000,
+      "toolTimeoutMs": 60000,
+      "idleTimeoutMs": 300000,
+      "restartPolicy": "on_failure",
+      "tools": {}
+    },
+    {
+      "id": "everything",
+      "name": "Everything",
+      "description": "Reference server from the MCP project: demo tools, prompts and resources for testing a client.",
+      "enabled": false,
+      "visibility": "normal",
+      "transport": "stdio",
+      "connection": {
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-everything"],
+        "env": {},
+        "secretEnv": []
+      },
+      "startupTimeoutMs": 60000,
+      "toolTimeoutMs": 60000,
+      "idleTimeoutMs": 300000,
+      "restartPolicy": "on_failure",
+      "tools": {}
+    },
+    {
+      "id": "remote",
+      "name": "Remote MCP",
+      "description": "Any remote server speaking Streamable HTTP. Put the token in the panel; it is stored in data/secrets.json.",
+      "enabled": false,
+      "visibility": "normal",
+      "transport": "streamable_http",
+      "connection": {
+        "url": "https://example.com/mcp",
+        "headers": {},
+        "verifyTls": true
+      },
+      "startupTimeoutMs": 30000,
+      "toolTimeoutMs": 60000,
+      "idleTimeoutMs": 300000,
+      "restartPolicy": "on_failure",
+      "tools": {}
+    }
+  ]
+}

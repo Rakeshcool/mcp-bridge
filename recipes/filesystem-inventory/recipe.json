@@ -1,0 +1,17 @@
+{
+  "description": "List the directories a filesystem MCP server is allowed to touch, then print its tree. Pure tool steps: no code execution needed.",
+  "server": "filesystem",
+  "steps": [
+    {
+      "name": "allowed-directories",
+      "tool": "filesystem__list_allowed_directories"
+    },
+    {
+      "name": "tree",
+      "tool": "filesystem__directory_tree",
+      "args": { "path": "${path}" }
+    }
+  ],
+  "spec": "example.json",
+  "usage": "node scripts/mcp.mjs recipe filesystem-inventory recipes/filesystem-inventory/example.json"
+}

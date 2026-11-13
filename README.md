@@ -4,7 +4,12 @@ A local service that gives a plain `llama-server` access to MCP tools — and gi
 model-free way to call those same tools.
 
 Nothing upstream is patched. The bridge sits in front of `llama.cpp`, owns the MCP servers, injects their
-tools into chat requests, and runs the tool calls itself:
+tools into chat requests, and runs the tool calls itself.
+
+The bridge is **not tied to any product**: every tool is discovered from whatever MCP servers you
+configure — a local executable speaking stdio, or a remote Streamable HTTP endpoint — and names are
+namespaced `serverId__toolName`. Nothing in the runtime, the panel or the CLI knows about any particular
+vendor, product or tool. Copy entries from [`servers.example.json`](servers.example.json) to start.
 
 ```
 OpenAI client / panel ──/v1/chat/completions──►  bridge :7800  ──►  llama-server :8080
@@ -57,7 +62,7 @@ assistant message. `stream: true` returns SSE.
 ```bash
 curl -s http://127.0.0.1:7800/v1/chat/completions \
   -H 'content-type: application/json' \
-  -d '{"messages":[{"role":"user","content":"Is Resolve running?"}]}'
+  -d '{"messages":[{"role":"user","content":"What tools do you have?"}]}'
 ```
 
 ### 2. Direct tool calls (no model)
@@ -65,30 +70,58 @@ curl -s http://127.0.0.1:7800/v1/chat/completions \
 `POST /api/tools/:exposedName/call` — the body is the argument object (or `{"arguments":{...}}`).
 
 ```bash
-curl -s http://127.0.0.1:7800/api/tools/davinci-resolve__get_resolve_status -X POST
-# {"ok":true,"tool":"get_resolve_status","serverId":"davinci-resolve","durationMs":1,
-#  "isError":false,"result":"{\"running\": true, \"version\": \"21.1.2\"}"}
+curl -s http://127.0.0.1:7800/api/tools/<serverId>__<toolName> -X POST -d '{}'
+# {"ok":true,"tool":"<toolName>","serverId":"<serverId>","durationMs":1,
+#  "isError":false,"result":{...}}
 ```
 
 Only tools whose permission is `allow` accept direct calls; `ask` and `deny` return **403** with an
 explanation, because no one is there to answer an approval prompt.
+
+Results are text, plus images when a server returns them (screenshots, renders, captures):
+
+```jsonc
+{ "ok": true, "isError": false, "result": "[image image/png, 1128 KB]",
+  "images": [{ "mimeType": "image/png", "dataUrl": "data:image/png;base64,…" }] }
+```
+
+The CLI writes those to `data/images/` and prints the file paths, so they can be opened, diffed or passed
+to a vision model without hand-decoding base64.
 
 ### 3. Agent CLI
 
 `scripts/mcp.mjs` has no dependencies and prints one JSON document per command (exit codes `0` / `1` / `2`).
 
 ```bash
-node scripts/mcp.mjs up            # start if needed, connect enabled servers
-node scripts/mcp.mjs tools         # list callable tools
-node scripts/mcp.mjs describe davinci-resolve__run_script
-node scripts/mcp.mjs call davinci-resolve__get_resolve_status
-node scripts/mcp.mjs script ./probe.py    # Python into Resolve, no JSON escaping
+node scripts/mcp.mjs up                    # start if needed, connect enabled servers
+node scripts/mcp.mjs servers               # configured servers, transport, status, tools
+node scripts/mcp.mjs connect <serverId>    # connect one server
+node scripts/mcp.mjs tools                 # list callable tools
+node scripts/mcp.mjs describe <exposedName>
+node scripts/mcp.mjs call <exposedName> '{"arg":1}'
+node scripts/mcp.mjs script ./probe.py --server <serverId>   # code into any code-execution tool
+node scripts/mcp.mjs recipe <name> spec.json # bundled workflow (see recipes/)
 node scripts/mcp.mjs status
-node scripts/mcp.mjs down          # stops only a bridge this script started
+node scripts/mcp.mjs down                  # stops only a bridge this script started
 ```
 
-`npm run mcp -- <command>` works too. Full contract, a paste-ready agent prompt and Resolve API gotchas:
-**[`AI_USAGE.md`](AI_USAGE.md)**.
+`call` saves any image results to `data/images/` and lists them under `images` in its JSON output.
+
+`npm run mcp -- <command>` works too. Full contract and a paste-ready agent prompt: **[`AI_USAGE.md`](AI_USAGE.md)**.
+
+## Recipes (optional, any server)
+
+A **recipe** is a folder under `recipes/` with a `recipe.json`. It is either a list of **steps** (plain tool
+calls, for servers with no code tool) or a **kit** (code sent to a code-execution tool) that verifies its own
+work, so one command replaces a probe loop:
+
+```bash
+node scripts/mcp.mjs recipe <name> <spec.json>
+```
+
+`recipes/filesystem-inventory` is the worked example (needs a filesystem server configured). Format,
+contract and kit rules: **[`recipes/README.md`](recipes/README.md)**.
+
 
 ## The panel
 
@@ -141,8 +174,9 @@ From the panel (**Add MCP Server**) or the API:
 
 ```jsonc
 // local stdio
-{ "name": "DaVinci Resolve", "transport": "stdio",
-  "connection": { "command": "D:\\path\\ResolveMCP.exe", "args": [], "env": { "BMD_IS_MCPB": "1" } } }
+{ "name": "Filesystem", "transport": "stdio",
+  "connection": { "command": "npx",
+                  "args": ["-y", "@modelcontextprotocol/server-filesystem", "."], "env": {} } }
 
 // remote Streamable HTTP
 { "name": "Remote", "transport": "streamable_http",
@@ -165,8 +199,10 @@ src/server/          bridge runtime (no framework, no MCP SDK)
   mcp/streamable.ts  Streamable HTTP client
   config.ts secrets.ts validate.ts logs.ts activity.ts approvals.ts
 src/client/          Svelte 5 panel (Chat / Servers / Bridge)
-scripts/mcp.mjs      agent CLI (start, list, call, script)
-data/                servers.json, bridge.json, secrets.json, bridge.log
+scripts/mcp.mjs      agent CLI (start, servers, tools, call, script, recipe)
+recipes/             recipe format (you add the recipes)
+data/                servers.json, bridge.json, secrets.json, bridge.log, images/
+servers.example.json copy-paste server entries (stdio + Streamable HTTP)
 AI_USAGE.md          how an AI drives it, with a paste-ready prompt
 ```
 

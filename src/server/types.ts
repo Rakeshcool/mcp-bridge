@@ -62,9 +62,17 @@ export interface ToolDef {
   inputSchema: unknown;
 }
 
+export interface ToolImage {
+  mimeType: string;
+  /** base64, no data-URL prefix */
+  data: string;
+}
+
 export interface ToolResult {
   text: string;
   isError: boolean;
+  /** Vision-capable tools (screenshots, scene captures) return image blocks. */
+  images?: ToolImage[];
 }
 
 export interface ServerRuntimeView {

@@ -29,9 +29,9 @@ Output includes everything needed to continue:
   "panel": "http://127.0.0.1:7800/",
   "openaiBaseUrl": "http://127.0.0.1:7800/v1",
   "upstream": { "reachable": false, "error": "not reachable at http://127.0.0.1:8080" },
-  "connected": [{ "id": "davinci-resolve", "status": "connected", "tools": 14 }],
-  "servers": [{ "id": "davinci-resolve", "status": "connected", "tools": 14 }],
-  "tools": 14
+  "connected": [{ "id": "filesystem", "status": "connected", "tools": 16 }],
+  "servers": [{ "id": "filesystem", "status": "connected", "tools": 16 }],
+  "tools": 16
 }
 ```
 
@@ -45,47 +45,73 @@ node scripts/mcp.mjs tools
 ```
 
 ```json
-[{ "exposedName": "davinci-resolve__get_resolve_status", "server": "DaVinci Resolve",
-   "permission": "allow", "enabled": true, "description": "Check whether DaVinci Resolve is running…" }]
+[{ "exposedName": "filesystem__list_directory", "server": "Filesystem",
+   "permission": "allow", "enabled": true, "description": "List the contents of a directory…" }]
 ```
 
 Tool names are namespaced `serverId__toolName`. Then get the argument schema:
 
 ```bash
-node scripts/mcp.mjs describe davinci-resolve__run_script
+node scripts/mcp.mjs describe filesystem__read_file
 ```
 
 ```json
-{ "exposedName": "davinci-resolve__run_script",
+{ "exposedName": "filesystem__read_file",
   "inputSchema": { "type": "object",
-                   "properties": { "script": { "type": "string" }, "timeout": { "type": "integer" } },
-                   "required": ["script"] } }
+                   "properties": { "path": { "type": "string" }, "head": { "type": "integer" } },
+                   "required": ["path"] } }
 ```
 
 ## 3. Call a tool
 
 ```bash
-node scripts/mcp.mjs call davinci-resolve__get_resolve_status
-node scripts/mcp.mjs call davinci-resolve__list_luts '{}'
-node scripts/mcp.mjs call davinci-resolve__run_script '{"script":"print(1+1)"}'
-echo '{"script":"print(1+1)"}' | node scripts/mcp.mjs call davinci-resolve__run_script -
+node scripts/mcp.mjs servers                                # what is configured?
+node scripts/mcp.mjs call <serverId>__<toolName>
+node scripts/mcp.mjs call <serverId>__<toolName> '{"arg":1}'
+echo '{"arg":1}' | node scripts/mcp.mjs call <serverId>__<toolName> -
 ```
+
+There is no vendor-specific tool name in this file on purpose: the bridge works with whatever servers you
+configure, and every tool is addressed as `serverId__toolName`.
 
 Result envelope — always the same shape:
 
 ```json
-{ "ok": true, "tool": "get_resolve_status", "server": "davinci-resolve",
-  "durationMs": 1, "isError": false, "result": { "running": true, "version": "21.1.2" } }
+{ "ok": true, "tool": "<toolName>", "server": "<serverId>",
+  "durationMs": 1, "isError": false, "result": { } }
 ```
 
 Exit code is `0` when the tool succeeded, `1` when it returned an error or the call failed, `2` on bad
 usage. Read `isError` and `result`; `result.output` holds captured stdout for the `run_script` style tools.
 
-For Resolve scripting, avoid JSON escaping entirely:
+### Code tools, without guessing their argument names
+
+Code-execution tools differ per server (`run_script`, `execute`, `run_python`, …) and name their payload
+differently (`script`, `code`, `source`). The CLI looks at the tool's schema and uses the right name:
 
 ```bash
-node scripts/mcp.mjs script ./probe.py      # or: node scripts/mcp.mjs script - < probe.py
+node scripts/mcp.mjs script ./probe.py                      # the only code tool on the bridge
+node scripts/mcp.mjs script ./probe.py --server <serverId>  # limit auto-detection to one server
+node scripts/mcp.mjs script ./probe.py --tool <exposedName> # exact tool
+node scripts/mcp.mjs script - < probe.py                    # stdin
 ```
+
+If more than one tool matches it fails with `candidates` rather than picking one, so you never send code
+to the wrong server by accident.
+
+### Recipes: one command for a multi-step job
+
+A recipe lives in `recipes/<name>/`: `recipe.json` names the server and tool, `kit.py` does the work and
+**verifies** it, so a single call replaces a probe loop:
+
+```bash
+node scripts/mcp.mjs recipe <name> <spec.json>
+```
+
+A recipe is a `recipe.json` that either lists **steps** (plain tool calls — works with any server) or names a
+code tool plus a kit. `recipes/filesystem-inventory` is the step example; the format is in
+`recipes/README.md`. Failures make the command exit `1`, and a missing spec value fails with the key name
+instead of sending a placeholder to the server.
 
 ## 4. Stop it
 
@@ -110,32 +136,26 @@ other way it refuses and tells you so, rather than killing a process it does not
 >   `ok`, `isError`, `durationMs`, `result`. Exit code 1 means the call failed: read `error` on stdout.
 > - Tool names are `serverId__toolName`. Tools with permission `ask` or `deny` reject direct calls with
 >   HTTP 403 — say so instead of retrying.
-> - To run Python inside DaVinci Resolve, write a `.py` file and use
->   `node scripts/mcp.mjs script ./file.py`, rather than escaping code into a JSON string.
+> - To send code to a code-execution tool, write a `.py`/`.js` file and use
+>   `node scripts/mcp.mjs script ./file.py [--server <id> | --tool <exposedName>]`, rather than escaping
+>   code into a JSON string.
+> - For a repeatable multi-step job use `node scripts/mcp.mjs recipe <name> <spec.json>` when a recipe
+>   exists for that server. A recipe verifies its own work and exits `1` when it could not.
 > - Servers stop themselves after 5 minutes idle (`IDLE STOP (S)` = 300). If a call returns
 >   `MCP_TOOL_NOT_FOUND: Unknown tool …`, run `node scripts/mcp.mjs up` again to reconnect — that is not a
 >   real failure.
-> - Large `AppendToTimeline`/bulk operations can exceed the 60 s MCP tool timeout while still succeeding in
->   the background. After a timeout, re-read state instead of retrying blindly, or you will duplicate work.
+> - Large bulk operations can exceed the 60 s MCP tool timeout while still succeeding in the background.
+>   After a timeout, re-read state instead of retrying blindly, or you will duplicate work.
 
 ---
 
 ## Notes and gotchas learned from real use
 
-**Resolve scripting API (the `davinci-resolve` server)**
+**Per-tool behaviour**
 
-- `proj.GetCurrentTimeline()`, then `timeline.GetItemListInTrack("video", 1)` — track indexes are 1-based.
-- `timeline.DetectSceneCuts()` returns `True` immediately but works **asynchronously**; re-read the clip
-  list a couple of seconds later to see the cuts.
-- `AppendToTimeline` treats `endFrame` as **exclusive** in this build, contrary to the docs
-  (`startFrame: s, endFrame: e` yields `e - s` frames). Always verify total frames afterwards.
-- `GetEffects()` and `DeleteEffects()` are unreliable (they report empty / return `False` even when effects
-  exist). `AddEffect("ofx", "Resolve FX/Resolve FX Blur/Gaussian Blur")` returns an Effect handle whose
-  `GetInfo()` is trustworthy, and its `GetIndex()` is **1-based**. There is no `SplitPlayhead`, so to cut
-  you rebuild the timeline from ranges.
-- Effect parameters are not writable through the scripting API (only `GetInfo`, `GetIndex`, `SetIndex`,
-  `GetIsEnabled`, `SetIsEnabled`).
-- `proj.GetCurrentPage()` is not available; `resolve.OpenPage("edit")` is.
+- A tool's argument names come from its schema — do not assume `script`/`code`; `describe` shows them.
+- Some tools return `False` or `None` where an exception would be expected. Treat a success return as a
+  claim and verify the changed state when the operation matters.
 
 **Bridge behaviour**
 
@@ -151,6 +171,9 @@ other way it refuses and tells you so, rather than killing a process it does not
 | `Bridge is not reachable at …` | not started | `node scripts/mcp.mjs up` |
 | `MCP_TOOL_NOT_FOUND: Unknown tool` | server idle-stopped | `node scripts/mcp.mjs up` |
 | HTTP 403 on `call` | tool is `ask`/`deny` | change the permission in the panel's Servers tab |
+| `Unknown tool: x` from the CLI | name not in the catalog | `node scripts/mcp.mjs tools` for exposed names |
+| `Several code-execution tools match` | auto-detection refused to guess | pass `--tool` or `--server` |
+| `No servers yet` | nothing configured | add one in the panel or copy from `servers.example.json` |
 | `UPSTREAM_UNREACHABLE` | only affects model chat | start `llama-server` if you want the model |
 | `MCP_CONNECTION_TIMEOUT` | tool ran past 60 s | re-read state; do not blindly retry |
 
