@@ -227,3 +227,8 @@ AI_USAGE.md          how an AI drives it, with a paste-ready prompt
 | HTTP 403 on a direct call | tool is `ask`/`deny` | change the permission on the Servers tab |
 | `MCP_PROCESS_EXITED` | server binary died at startup | check its Logs tab; verify the command path |
 | Model stops with "maximum number of tool-call rounds" | it kept calling tools | raise max rounds under Bridge, or give exact API names |
+
+## License
+
+Licensed under the Apache License, Version 2.0 — see [LICENSE](LICENSE).
+Copyright 2026 Rakeshcool.

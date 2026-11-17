@@ -1,6 +1,7 @@
 {
   "name": "llama-mcp-bridge",
   "version": "0.1.0",
+  "license": "Apache-2.0",
   "private": true,
   "type": "module",
   "description": "Local MCP bridge: owns any MCP servers (stdio or Streamable HTTP) and injects their tools into any OpenAI-compatible llama-server request.",
