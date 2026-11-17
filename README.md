@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.png" alt="MCP Bridge" width="300">
+</p>
+
 # MCP Bridge for llama.cpp
 
 A local service that gives a plain `llama-server` access to MCP tools — and gives any AI agent a direct,
@@ -32,11 +36,20 @@ browser / CLI / any agent ──/api/tools/:name/call──► bridge ──► 
 
 ## Quick start
 
+**Start with the menu.** As soon as the bridge is installed, run it first: it shows whether the bridge is
+running and starts or stops it, so it is the only command you need to remember.
+
 ```bash
-bun install
-bun run build      # builds the panel into dist/client
-bun run start      # http://127.0.0.1:7800
+bun install                # once: dependencies
+bun run build              # once, and after client changes: builds the panel into dist/client
+
+node scripts/menu.mjs      # then this: 1) Start   2) Stop   3) Refresh   0) Quit
 ```
+
+Press **1** and the bridge comes up on `http://127.0.0.1:7800/`; press **2** to stop it. To skip the menu,
+the same actions are `node scripts/menu.mjs start` and `node scripts/menu.mjs stop`, and `status` prints the
+state without changing it. Port defaults to `7800`; `--port 8080` overrides it. If you would rather not use
+the menu, `bun run start` (or `npm start`) runs the same server in the foreground.
 
 Then either:
 
@@ -93,6 +106,7 @@ to a vision model without hand-decoding base64.
 `scripts/mcp.mjs` has no dependencies and prints one JSON document per command (exit codes `0` / `1` / `2`).
 
 ```bash
+node scripts/menu.mjs                     # menu: start / stop / status in one screen
 node scripts/mcp.mjs up                    # start if needed, connect enabled servers
 node scripts/mcp.mjs servers               # configured servers, transport, status, tools
 node scripts/mcp.mjs connect <serverId>    # connect one server
@@ -199,6 +213,7 @@ src/server/          bridge runtime (no framework, no MCP SDK)
   mcp/streamable.ts  Streamable HTTP client
   config.ts secrets.ts validate.ts logs.ts activity.ts approvals.ts
 src/client/          Svelte 5 panel (Chat / Servers / Bridge)
+scripts/menu.mjs     start/stop menu (status + up/down)
 scripts/mcp.mjs      agent CLI (start, servers, tools, call, script, recipe)
 recipes/             recipe format (you add the recipes)
 data/                servers.json, bridge.json, secrets.json, bridge.log, images/

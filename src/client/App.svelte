@@ -130,7 +130,7 @@
   <header class="sticky top-0 z-20 border-b border-edge bg-panel/95 backdrop-blur">
     <div class="mx-auto flex max-w-6xl items-center gap-5 px-6 py-3">
       <div class="flex items-center gap-2">
-        <span class="h-2.5 w-2.5 rounded-full bg-accent"></span>
+        <img src="/logo-256.png" alt="MCP Bridge" class="h-8 w-auto" />
         <h1 class="text-sm font-semibold tracking-wide">MCP Bridge</h1>
         <span class="text-xs text-dim">llama.cpp ⇄ MCP</span>
       </div>

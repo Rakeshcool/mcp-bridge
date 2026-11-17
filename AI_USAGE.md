@@ -1,3 +1,7 @@
+<div align="center">
+  <img src="assets/logo.png" width="120" alt="Logo">
+</div>
+
 # Driving the MCP servers from an AI agent
 
 This file is for an AI (or a human wiring an AI up). It explains how to start this project's bridge and
@@ -5,6 +9,23 @@ call its MCP tools directly, with no model and no `llama-server` in the loop.
 
 Everything goes through one script: **`scripts/mcp.mjs`**. It has no dependencies, needs only Node 18+, and
 prints exactly one JSON document on stdout per command (progress notes go to stderr).
+
+---
+
+## 0. Start it from the menu first
+
+If the bridge has just been installed, bring it up through the menu before running anything else:
+
+```bash
+node scripts/menu.mjs      # 1) Start   2) Stop   3) Refresh   0) Quit
+```
+
+It prints whether the bridge is running (panel URL, connected servers, tool count) and then runs the same
+`up` / `down` as the CLI, so whatever it starts is exactly what the commands below see. Press **1** to start
+and **2** to stop; `node scripts/menu.mjs start|stop|status` does the same without the prompt, and
+`--port <n>` overrides the default `7800`.
+
+The menu is the human entry point. An agent should keep using the non-interactive commands in section 1.
 
 ---
 
@@ -168,7 +189,7 @@ other way it refuses and tells you so, rather than killing a process it does not
 
 | Symptom | Meaning | Fix |
 | --- | --- | --- |
-| `Bridge is not reachable at …` | not started | `node scripts/mcp.mjs up` |
+| `Bridge is not reachable at …` | not started | start it from the menu (`node scripts/menu.mjs`) or `node scripts/mcp.mjs up` |
 | `MCP_TOOL_NOT_FOUND: Unknown tool` | server idle-stopped | `node scripts/mcp.mjs up` |
 | HTTP 403 on `call` | tool is `ask`/`deny` | change the permission in the panel's Servers tab |
 | `Unknown tool: x` from the CLI | name not in the catalog | `node scripts/mcp.mjs tools` for exposed names |
