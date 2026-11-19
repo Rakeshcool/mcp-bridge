@@ -7,6 +7,7 @@ import { ActivityStore } from "./activity.ts";
 import { setLogRedactor } from "./logs.ts";
 import { redact } from "./secrets.ts";
 import { checkHost, handleApi, handleBridge, serveStatic } from "./api.ts";
+import { handleMcpEndpoint, MCP_ENDPOINT_PATH } from "./mcp/server.ts";
 import { DEFAULT_PORT } from "./constants.ts";
 import { upstreamStatus } from "./upstream.ts";
 import type { BridgeSettings } from "./types.ts";
@@ -51,6 +52,10 @@ const server = http.createServer((req, res) => {
     }
     const url = new URL(req.url ?? "/", `http://127.0.0.1:${PORT}`);
     try {
+      if (url.pathname === MCP_ENDPOINT_PATH) {
+        await handleMcpEndpoint(req, res, ctx);
+        return;
+      }
       if (url.pathname.startsWith("/api/")) {
         await handleApi(req, res, url, ctx);
         return;
@@ -81,6 +86,7 @@ server.listen(PORT, "127.0.0.1", () => {
   const actualPort = typeof address === "object" && address ? address.port : PORT;
   console.log(`[mcp-bridge] panel     http://127.0.0.1:${actualPort}`);
   console.log(`[mcp-bridge] base_url  http://127.0.0.1:${actualPort}/v1`);
+  console.log(`[mcp-bridge] mcp       http://127.0.0.1:${actualPort}${MCP_ENDPOINT_PATH}`);
   console.log(`[mcp-bridge] upstream  ${settings.baseUrl}`);
   void upstreamStatus(settings.baseUrl).then((status) => {
     if (status.reachable) console.log(`[mcp-bridge] llama-server reachable, model: ${status.model || "(unknown)"}`);

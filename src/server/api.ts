@@ -10,6 +10,8 @@ import type { ApprovalService } from "./approvals.ts";
 import type { ActivityStore } from "./activity.ts";
 import type { BridgeSettings, HttpConnection, MCPServerConfig, StdioConnection, ToolResult } from "./types.ts";
 import { runChat } from "./bridge.ts";
+import { MCP_ENDPOINT_PATH } from "./mcp/server.ts";
+import { PROTOCOL_VERSION } from "./mcp/client.ts";
 import { upstreamStatus } from "./upstream.ts";
 import { DEFAULT_PORT } from "./constants.ts";
 
@@ -253,6 +255,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
         approvals: ctx.approvals.list(),
         activity: ctx.activity.list().slice(0, 25),
         catalog: ctx.registry.catalog(),
+        mcp: { path: MCP_ENDPOINT_PATH, protocolVersion: PROTOCOL_VERSION, transport: "streamable-http", sse: false },
         platform: process.platform,
       });
       return;

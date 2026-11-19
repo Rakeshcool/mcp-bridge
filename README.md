@@ -64,7 +64,7 @@ Environment:
 | `PORT` | `7800` | Bridge port |
 | `LLAMA_BASE` | `http://127.0.0.1:8080` | Upstream `llama-server` |
 
-## Three ways in
+## Four ways in
 
 ### 1. Model chat (needs llama-server)
 
@@ -134,6 +134,22 @@ argument, so a flag such as `--port 8080` can be passed: `--args app.mjs -- --po
 
 `npm run mcp -- <command>` works too. Full contract and a paste-ready agent prompt: **[`AI_USAGE.md`](AI_USAGE.md)**.
 
+### 4. Any MCP client (aggregated MCP endpoint)
+
+The bridge also *is* an MCP server. `POST /mcp` speaks Streamable HTTP and lists every tool from every
+connected server under the same `serverId__toolName` names, with the same Allow / Ask / Deny policy, the same
+idle reconnect and the same activity log — so another agent registers one URL instead of every server again.
+
+```jsonc
+// Claude Code, Cursor, VS Code, or any client that takes a remote MCP server
+{ "mcpServers": { "bridge": { "type": "http", "url": "http://127.0.0.1:7800/mcp" } } }
+```
+
+`initialize`, `ping`, `tools/list` and `tools/call` are served, with JSON responses instead of an SSE stream:
+`GET /mcp` answers **405**, so a client that insists on a server-initiated stream will not connect. An
+`ask`-level call waits for the panel approval (60 s, denied on timeout), a `deny`-level call returns an error
+result, and `MCP_TOOL_NOT_FOUND` from this endpoint really means the name does not exist.
+
 ## Recipes (optional, any server)
 
 A **recipe** is a folder under `recipes/` with a `recipe.json`. It is either a list of **steps** (plain tool
@@ -177,6 +193,7 @@ Served from the same port as the API, so there is nothing extra to run.
 | --- | --- | --- |
 | POST | `/v1/chat/completions` | Bridged chat with MCP tools; `stream: true` returns SSE |
 | ANY | `/v1/*` except chat (models, completions, embeddings…) | Proxied straight to `llama-server` |
+| POST | `/mcp` | Aggregated MCP server for other MCP clients; stateless, `GET` answers 405, `DELETE` is a no-op |
 | GET | `/props`, `/health`, `/metrics`, `/tokenize`, `/detokenize`, `/slots` | Proxied straight to `llama-server` |
 | GET | `/api/state` | Servers, runtime status, bridge settings, catalog, approvals |
 | POST / GET | `/api/servers` | Create / list servers |

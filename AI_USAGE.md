@@ -148,6 +148,20 @@ code tool plus a kit. `recipes/filesystem-inventory` is the step example; the fo
 `recipes/README.md`. Failures make the command exit `1`, and a missing spec value fails with the key name
 instead of sending a placeholder to the server.
 
+## Use it from another MCP client
+
+The bridge is also an MCP server at `http://127.0.0.1:7800/mcp` (Streamable HTTP, POST only). Registering
+that URL in any MCP client hands it this machine's whole catalog, named `serverId__toolName`, with the panel's
+Allow / Ask / Deny policy applied:
+
+```jsonc
+{ "mcpServers": { "bridge": { "type": "http", "url": "http://127.0.0.1:7800/mcp" } } }
+```
+
+An `ask` call blocks until the approval is answered in the panel (60 s, then denied), a `deny` call comes
+back as an error result, and a stopped server reconnects on the next call. `GET /mcp` answers **405** because
+this endpoint does not open a server-initiated SSE stream.
+
 ## 4. Stop it
 
 ```bash
