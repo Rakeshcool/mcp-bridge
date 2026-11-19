@@ -27,11 +27,6 @@ export interface ApiContext {
 const MASK = "••••";
 const MAX_BODY = 1_048_576;
 
-// Raised by Registry.callTool when the server stopped between discovery and the call.
-function isNotConnected(error: unknown): boolean {
-  return error instanceof Error && error.message.startsWith("MCP_SERVER_NOT_CONNECTED");
-}
-
 function sendJson(res: ServerResponse, status: number, payload: unknown): void {
   const body = JSON.stringify(payload);
   res.writeHead(status, {
@@ -370,17 +365,9 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
         const server = ctx.registry.find(entry.serverId);
         const timeoutMs = server?.toolTimeoutMs ?? 60000;
         const startedAt = Date.now();
-        let result: ToolResult;
-        try {
-          result = await ctx.registry.callTool(entry.serverId, entry.toolName, args ?? {}, timeoutMs);
-        } catch (error) {
-          // The server can idle-stop in the gap between discovery and the call itself.
-          // Reconnect once and retry, rather than handing the caller a dead end.
-          if (reconnected || !isNotConnected(error)) throw error;
-          await ctx.registry.connect(entry.serverId);
-          reconnected = true;
-          result = await ctx.registry.callTool(entry.serverId, entry.toolName, args ?? {}, timeoutMs);
-        }
+        const outcome = await ctx.registry.callToolWithReconnect(entry.serverId, entry.toolName, args ?? {}, timeoutMs, reconnected);
+        const result = outcome.result;
+        reconnected = outcome.reconnected;
         sendJson(res, 200, {
           ok: !result.isError,
           tool: exposedName,

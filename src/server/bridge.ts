@@ -182,7 +182,8 @@ export async function runChat(params: RunParams): Promise<BridgeRunResult> {
           status = "denied";
         } else {
           try {
-            const result = await registry.callTool(entry.serverId, entry.toolName, args, settings.toolTimeoutMs);
+            // The server can idle-stop while the model is thinking, between the catalog snapshot and this call.
+            const { result } = await registry.callToolWithReconnect(entry.serverId, entry.toolName, args, settings.toolTimeoutMs);
             text = result.isError ? `Tool reported an error:\n${result.text}` : result.text;
             status = result.isError ? "error" : "ok";
             // The model only sees text; the panel shows a couple of thumbnails per call.

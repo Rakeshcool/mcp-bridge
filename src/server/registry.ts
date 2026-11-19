@@ -45,6 +45,11 @@ export interface CatalogEntry {
   permission: PermissionMode;
 }
 
+/** Raised by `callTool` when the server stopped between discovery and the call. */
+export function isNotConnected(error: unknown): boolean {
+  return error instanceof Error && error.message.startsWith("MCP_SERVER_NOT_CONNECTED");
+}
+
 function nowIso(): string {
   return new Date().toISOString();
 }
@@ -478,6 +483,28 @@ export class Registry {
     }
     runtime.calls += 1;
     return runtime.client.callTool(toolName, args, timeoutMs);
+  }
+
+  /**
+   * Calls a tool, reconnecting once when the server idle-stopped between discovery and the call
+   * itself. `alreadyReconnected` is set by callers that just reconnected the server through
+   * `resolveDirectTool`, so one call never respawns a dead server twice; the flag comes back true
+   * when a reconnect was involved at all.
+   */
+  async callToolWithReconnect(
+    serverId: string,
+    toolName: string,
+    args: unknown,
+    timeoutMs: number,
+    alreadyReconnected = false,
+  ): Promise<{ result: ToolResult; reconnected: boolean }> {
+    try {
+      return { result: await this.callTool(serverId, toolName, args, timeoutMs), reconnected: alreadyReconnected };
+    } catch (error) {
+      if (alreadyReconnected || !isNotConnected(error)) throw error;
+      await this.connect(serverId);
+      return { result: await this.callTool(serverId, toolName, args, timeoutMs), reconnected: true };
+    }
   }
 
   async shutdown(): Promise<void> {
