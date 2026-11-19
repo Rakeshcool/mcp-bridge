@@ -487,9 +487,8 @@ export class Registry {
 
   /**
    * Calls a tool, reconnecting once when the server idle-stopped between discovery and the call
-   * itself. `alreadyReconnected` is set by callers that just reconnected the server through
-   * `resolveDirectTool`, so one call never respawns a dead server twice; the flag comes back true
-   * when a reconnect was involved at all.
+   * itself. `alreadyReconnected` marks a caller that just reconnected through `resolveDirectTool`,
+   * so one call never respawns a dead server twice. Returns whether a reconnect was involved.
    */
   async callToolWithReconnect(
     serverId: string,

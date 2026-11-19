@@ -350,7 +350,6 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
           );
         }
         const entry = resolved.entry;
-        let reconnected = resolved.reconnected;
         if (!entry.enabled) throw new ApiError("MCP_PERMISSION_DENIED", `Tool ${exposedName} is disabled`, 403);
         if (entry.permission !== "allow") {
           throw new ApiError(
@@ -365,9 +364,10 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
         const server = ctx.registry.find(entry.serverId);
         const timeoutMs = server?.toolTimeoutMs ?? 60000;
         const startedAt = Date.now();
-        const outcome = await ctx.registry.callToolWithReconnect(entry.serverId, entry.toolName, args ?? {}, timeoutMs, reconnected);
-        const result = outcome.result;
-        reconnected = outcome.reconnected;
+        // Reconnects a server that idle-stopped between resolving the tool and this call.
+        const { result, reconnected } = await ctx.registry.callToolWithReconnect(
+          entry.serverId, entry.toolName, args ?? {}, timeoutMs, resolved.reconnected,
+        );
         sendJson(res, 200, {
           ok: !result.isError,
           tool: exposedName,

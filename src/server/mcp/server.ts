@@ -155,26 +155,18 @@ async function callTool(params: any, ctx: McpEndpointContext): Promise<Record<st
     return { content: [{ type: "text", text: denial }], isError: true };
   }
 
-  const fail = (error: unknown): Record<string, unknown> => {
-    const message = error instanceof Error ? error.message : String(error);
-    note("error", message);
-    ctx.activity.finish(record, message);
-    return { content: [{ type: "text", text: `Tool execution failed: ${message}` }], isError: true };
-  };
-
   let result: ToolResult;
   try {
     // The server can idle-stop in the gap between resolving the tool and this call, most easily
     // while an `ask` approval is pending.
     ({ result } = await ctx.registry.callToolWithReconnect(
-      entry.serverId,
-      entry.toolName,
-      args,
-      ctx.getSettings().toolTimeoutMs,
-      resolved.reconnected,
+      entry.serverId, entry.toolName, args, ctx.getSettings().toolTimeoutMs, resolved.reconnected,
     ));
   } catch (error) {
-    return fail(error);
+    const message = error instanceof Error ? error.message : String(error);
+    note("error", message);
+    ctx.activity.finish(record, message);
+    return { content: [{ type: "text", text: `Tool execution failed: ${message}` }], isError: true };
   }
 
   note(
