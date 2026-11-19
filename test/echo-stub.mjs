@@ -1,12 +1,33 @@
-// Minimal MCP stdio server used by test/reconnect.test.ts: one echo tool, and nothing
-// that keeps the process alive once stdin closes.
+// Minimal MCP stdio server used by the endpoint tests: an echo tool, an image tool, a tool that
+// reports an error, and nothing that keeps the process alive once stdin closes.
 import process from "node:process";
+
+/** 1x1 transparent PNG, small enough to compare byte for byte. */
+export const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
 
 const tools = [
   {
     name: "say",
     description: "Echo the text back",
     inputSchema: { type: "object", properties: { text: { type: "string" } } },
+  },
+  {
+    name: "shot",
+    description: "Return a tiny image next to some text",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "boom",
+    description: "Report an error result",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "report",
+    title: "Report",
+    description: "Return a structured report",
+    inputSchema: { type: "object", properties: {} },
+    outputSchema: { type: "object", properties: { answer: { type: "number" } }, required: ["answer"] },
+    annotations: { readOnlyHint: true, openWorldHint: false },
   },
 ];
 
@@ -34,14 +55,44 @@ function handle(raw) {
   if (message.method === "ping") return send({ jsonrpc: "2.0", id: message.id, result: {} });
   if (message.method === "tools/list") return send({ jsonrpc: "2.0", id: message.id, result: { tools } });
   if (message.method === "tools/call") {
-    if (message.params?.name !== "say") {
-      return send({ jsonrpc: "2.0", id: message.id, error: { code: -32602, message: "unknown tool" } });
+    const name = message.params?.name;
+    if (name === "say") {
+      return send({
+        jsonrpc: "2.0",
+        id: message.id,
+        result: { content: [{ type: "text", text: `echo: ${message.params?.arguments?.text ?? ""}` }] },
+      });
     }
-    return send({
-      jsonrpc: "2.0",
-      id: message.id,
-      result: { content: [{ type: "text", text: `echo: ${message.params?.arguments?.text ?? ""}` }] },
-    });
+    if (name === "shot") {
+      return send({
+        jsonrpc: "2.0",
+        id: message.id,
+        result: {
+          content: [
+            { type: "text", text: "shot" },
+            { type: "image", data: PNG, mimeType: "image/png" },
+          ],
+        },
+      });
+    }
+    if (name === "boom") {
+      return send({
+        jsonrpc: "2.0",
+        id: message.id,
+        result: { content: [{ type: "text", text: "boom" }], isError: true },
+      });
+    }
+    if (name === "report") {
+      return send({
+        jsonrpc: "2.0",
+        id: message.id,
+        result: {
+          content: [{ type: "text", text: "answer: 42" }],
+          structuredContent: { answer: 42 },
+        },
+      });
+    }
+    return send({ jsonrpc: "2.0", id: message.id, error: { code: -32602, message: `unknown tool: ${name}` } });
   }
   return send({ jsonrpc: "2.0", id: message.id, error: { code: -32601, message: "Method not found" } });
 }

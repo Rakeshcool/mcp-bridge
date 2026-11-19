@@ -32,6 +32,23 @@ export function initializeParams(): Record<string, unknown> {
   };
 }
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+/** Keeps the metadata a server publishes so /mcp can offer the same contract as a direct connection. */
+export function normalizeTool(tool: any): ToolDef {
+  const def: ToolDef = {
+    name: String(tool?.name ?? ""),
+    description: String(tool?.description ?? ""),
+    inputSchema: tool?.inputSchema ?? { type: "object", properties: {} },
+  };
+  if (typeof tool?.title === "string" && tool.title) def.title = tool.title;
+  if (isPlainObject(tool?.outputSchema)) def.outputSchema = tool.outputSchema;
+  if (isPlainObject(tool?.annotations)) def.annotations = tool.annotations;
+  return def;
+}
+
 export function normalizeToolResult(result: unknown): ToolResult {
   const payload = (result ?? {}) as Record<string, unknown>;
   const blocks = Array.isArray(payload.content) ? payload.content : [];
@@ -63,6 +80,7 @@ export function normalizeToolResult(result: unknown): ToolResult {
     text,
     isError: payload.isError === true,
     ...(images.length ? { images } : {}),
+    ...(isPlainObject(payload.structuredContent) ? { structuredContent: payload.structuredContent } : {}),
   };
 }
 

@@ -60,6 +60,10 @@ export interface ToolDef {
   name: string;
   description: string;
   inputSchema: unknown;
+  /** Optional metadata a server publishes; /mcp passes it through to its own clients. */
+  title?: string;
+  outputSchema?: unknown;
+  annotations?: unknown;
 }
 
 export interface ToolImage {
@@ -73,6 +77,8 @@ export interface ToolResult {
   isError: boolean;
   /** Vision-capable tools (screenshots, scene captures) return image blocks. */
   images?: ToolImage[];
+  /** Machine-readable result a tool returned next to its text; /mcp passes it through. */
+  structuredContent?: Record<string, unknown>;
 }
 
 export interface ServerRuntimeView {

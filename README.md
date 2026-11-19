@@ -150,6 +150,10 @@ idle reconnect and the same activity log — so another agent registers one URL 
 `ask`-level call waits for the panel approval (60 s, denied on timeout), a `deny`-level call returns an error
 result, and `MCP_TOOL_NOT_FOUND` from this endpoint really means the name does not exist.
 
+Tool metadata is passed through, not flattened: `tools/list` carries `title`, `outputSchema` and `annotations`
+whenever the owning server publishes them, and a tool that returns `structuredContent` keeps it in the
+`tools/call` result alongside its text block.
+
 ## Recipes (optional, any server)
 
 A **recipe** is a folder under `recipes/` with a `recipe.json`. It is either a list of **steps** (plain tool

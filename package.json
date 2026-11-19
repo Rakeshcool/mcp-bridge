@@ -12,7 +12,7 @@
     "dev": "node --watch src/server/index.ts",
     "build": "vite build",
     "typecheck": "tsc --noEmit",
-    "test": "node --test test/reconnect.test.ts"
+    "test": "node --test test/mcp.test.ts"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^6.2.1",

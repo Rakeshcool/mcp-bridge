@@ -2,7 +2,7 @@ import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import type { MCPServerConfig, StdioConnection, ToolDef, ToolResult } from "../types.ts";
-import { initializeParams, normalizeToolResult } from "./client.ts";
+import { initializeParams, normalizeTool, normalizeToolResult } from "./client.ts";
 import type { MCPClient, MCPClientOptions } from "./client.ts";
 
 const isWindows = process.platform === "win32";
@@ -168,11 +168,7 @@ export class StdioClient implements MCPClient {
   async listTools(): Promise<ToolDef[]> {
     const result = await this.request("tools/list", {}, this.startTimeout);
     const rawTools = Array.isArray((result as any)?.tools) ? (result as any).tools : [];
-    return rawTools.map((tool: any) => ({
-      name: String(tool?.name ?? ""),
-      description: String(tool?.description ?? ""),
-      inputSchema: tool?.inputSchema ?? { type: "object", properties: {} },
-    }));
+    return rawTools.map(normalizeTool);
   }
 
   async callTool(name: string, args: unknown, timeoutMs: number): Promise<ToolResult> {

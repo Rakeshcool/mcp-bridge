@@ -41,6 +41,10 @@ export interface CatalogEntry {
   exposedName: string;
   description: string;
   inputSchema: unknown;
+  /** Carried through from the server so /mcp clients see the same tool contract. */
+  title?: string;
+  outputSchema?: unknown;
+  annotations?: unknown;
   enabled: boolean;
   permission: PermissionMode;
 }
@@ -62,6 +66,7 @@ export class Registry {
   servers: MCPServerConfig[];
   private events: EventEmitter;
   private runtimes = new Map<string, Runtime>();
+  private connecting = new Map<string, Promise<ServerRuntimeView>>();
   private persist: () => void;
 
   constructor(servers: MCPServerConfig[], events: EventEmitter, persist: () => void) {
@@ -228,17 +233,29 @@ export class Registry {
     }, delay);
   }
 
-  async connect(id: string): Promise<ServerRuntimeView> {
+  /**
+   * Connects a server, joining an attempt that is already in flight instead of refusing it. Two
+   * callers that both find the server idle-stopped therefore share one reconnect; without this the
+   * second one failed with MCP_BUSY from a tool call, or saw the tool as missing from discovery.
+   */
+  connect(id: string): Promise<ServerRuntimeView> {
+    const inFlight = this.connecting.get(id);
+    if (inFlight) return inFlight;
+    const attempt = this.doConnect(id).finally(() => {
+      if (this.connecting.get(id) === attempt) this.connecting.delete(id);
+    });
+    this.connecting.set(id, attempt);
+    return attempt;
+  }
+
+  private async doConnect(id: string): Promise<ServerRuntimeView> {
     const server = this.find(id);
     if (!server) throw new ApiError("MCP_SERVER_NOT_FOUND", `Unknown server: ${id}`, 404);
     if (!server.enabled) throw new ApiError("MCP_SERVER_DISABLED", "Enable the server before connecting", 409, { serverId: id });
     const runtime = this.runtime(id);
     // "reconnecting" must stay connectable: the restart policy schedules a connect while
     // the runtime is in that state, and blocking it makes auto-restart a no-op.
-    if (runtime.status === "starting" || runtime.status === "connected") {
-      if (runtime.status === "connected") return this.view(id);
-      throw new ApiError("MCP_BUSY", `Server ${id} is already ${runtime.status}`, 409, { serverId: id });
-    }
+    if (runtime.status === "connected") return this.view(id);
     if (runtime.client) {
       try {
         await runtime.client.close();
@@ -301,6 +318,9 @@ export class Registry {
   }
 
   async disconnect(id: string): Promise<ServerRuntimeView> {
+    // An attempt already in flight belongs to the connection being closed: forget it here so a
+    // `restart` connects again instead of joining the attempt this method just killed.
+    this.connecting.delete(id);
     const runtime = this.runtime(id);
     if (runtime.reconnectTimer) {
       clearTimeout(runtime.reconnectTimer);
@@ -373,6 +393,9 @@ export class Registry {
           exposedName: this.exposedName(server.id, tool.name),
           description: tool.description,
           inputSchema: tool.inputSchema,
+          ...(tool.title ? { title: tool.title } : {}),
+          ...(tool.outputSchema ? { outputSchema: tool.outputSchema } : {}),
+          ...(tool.annotations ? { annotations: tool.annotations } : {}),
           enabled: settings.enabled,
           permission: settings.permission,
         });
@@ -462,14 +485,14 @@ export class Registry {
       .filter((server) => exposedName.startsWith(`${server.id}__`))
       .sort((a, b) => b.id.length - a.id.length)[0];
     if (!owner || !owner.enabled) return null;
-    const status = this.runtime(owner.id).status;
-    // Still connected means the tool really is gone; starting means a connect is already
-    // in flight and this call must not race it.
-    if (status === "connected" || status === "starting") return null;
-
     const runtime = this.runtime(owner.id);
-    runtime.logs.push("info", `direct call to ${exposedName} — reconnecting idle-stopped server`);
-    this.emit("log", { serverId: owner.id, level: "info", message: "reconnecting for a direct tool call" });
+    // Still connected means the tool really is gone. "starting" means another caller is already
+    // reconnecting this server, and `connect` joins that attempt instead of racing it.
+    if (runtime.status === "connected") return null;
+    if (runtime.status !== "starting") {
+      runtime.logs.push("info", `direct call to ${exposedName} — reconnecting idle-stopped server`);
+      this.emit("log", { serverId: owner.id, level: "info", message: "reconnecting for a direct tool call" });
+    }
     await this.connect(owner.id);
 
     const recovered = this.catalog().find((item) => item.exposedName === exposedName);

@@ -1,7 +1,7 @@
 import http from "node:http";
 import https from "node:https";
 import type { HttpConnection, MCPServerConfig, ToolDef, ToolResult } from "../types.ts";
-import { initializeParams, normalizeToolResult } from "./client.ts";
+import { initializeParams, normalizeTool, normalizeToolResult } from "./client.ts";
 import type { MCPClient, MCPClientOptions } from "./client.ts";
 
 interface RawResponse {
@@ -104,11 +104,7 @@ export class StreamableHttpClient implements MCPClient {
   async listTools(): Promise<ToolDef[]> {
     const result = await this.post({ jsonrpc: "2.0", id: this.nextId++, method: "tools/list", params: {} }, this.opts.startupTimeoutMs);
     const rawTools = Array.isArray((result as any)?.tools) ? (result as any).tools : [];
-    return rawTools.map((tool: any) => ({
-      name: String(tool?.name ?? ""),
-      description: String(tool?.description ?? ""),
-      inputSchema: tool?.inputSchema ?? { type: "object", properties: {} },
-    }));
+    return rawTools.map(normalizeTool);
   }
 
   async callTool(name: string, args: unknown, timeoutMs: number): Promise<ToolResult> {

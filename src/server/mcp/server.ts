@@ -180,7 +180,12 @@ async function callTool(params: any, ctx: McpEndpointContext): Promise<Record<st
 
   const content: Array<Record<string, unknown>> = [{ type: "text", text: result.text || "(no output)" }];
   for (const image of result.images ?? []) content.push({ type: "image", data: image.data, mimeType: image.mimeType });
-  return result.isError ? { content, isError: true } : { content };
+  // The text block stays for clients that ignore structured output; clients that read it get the object.
+  const payload: Record<string, unknown> = {
+    content,
+    ...(result.structuredContent ? { structuredContent: result.structuredContent } : {}),
+  };
+  return result.isError ? { ...payload, isError: true } : payload;
 }
 
 async function dispatch(message: JsonRpcMessage, ctx: McpEndpointContext): Promise<unknown> {
@@ -196,8 +201,13 @@ async function dispatch(message: JsonRpcMessage, ctx: McpEndpointContext): Promi
           .filter((entry) => entry.visibility !== "hidden_until_mentioned")
           .map((entry) => ({
             name: entry.exposedName,
+            // Everything the owning server published travels with the tool, so a client here
+            // sees the same contract it would get by connecting to that server directly.
+            ...(entry.title ? { title: entry.title } : {}),
             description: entry.description || `${entry.toolName} (from ${entry.serverName})`,
             inputSchema: validateToolSchema(entry.inputSchema),
+            ...(entry.outputSchema ? { outputSchema: entry.outputSchema } : {}),
+            ...(entry.annotations ? { annotations: entry.annotations } : {}),
           })),
       };
     case "tools/call":
