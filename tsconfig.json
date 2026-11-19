@@ -11,5 +11,5 @@
     "lib": ["ES2023", "DOM", "DOM.Iterable"],
     "types": ["node"]
   },
-  "include": ["src/server/**/*.ts", "src/client/**/*.ts"]
+  "include": ["src/server/**/*.ts", "src/client/**/*.ts", "test/**/*.ts"]
 }
