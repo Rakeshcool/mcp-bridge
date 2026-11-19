@@ -105,6 +105,9 @@ Results are text, plus images when a server returns them (screenshots, renders, 
 The CLI writes those to `data/images/` and prints the file paths, so they can be opened, diffed or passed
 to a vision model without hand-decoding base64.
 
+A tool that publishes structured output also returns it as `structuredContent`, the same field `/mcp`
+sends, so both ways in give a client the same result.
+
 ### 3. Agent CLI
 
 `scripts/mcp.mjs` has no dependencies and prints one JSON document per command (exit codes `0` / `1` / `2`).

@@ -56,6 +56,7 @@ const registry = new Registry(
         say: { enabled: true, permission: "allow" },
         shot: { enabled: true, permission: "allow" },
         boom: { enabled: true, permission: "allow" },
+        report: { enabled: true, permission: "allow" },
       },
     } satisfies MCPServerConfig,
   ],
@@ -199,6 +200,14 @@ test("POST /api/tools/<name>/call reconnects a server that idle-stopped first", 
   assert.equal(second.body.result, "echo: after idle");
   assert.equal(second.body.reconnected, true);
   assert.equal(registry.view("echo").status, "connected");
+
+  // The direct route returns structured output the same way /mcp does.
+  const report = await post(`/api/tools/${REPORT}/call`, {});
+  assert.equal(report.status, 200);
+  assert.equal(report.body.result, "answer: 42");
+  assert.deepEqual(report.body.structuredContent, { answer: 42 });
+  const textOnly = await post(`/api/tools/${TOOL}/call`, { text: "plain" });
+  assert.equal("structuredContent" in textOnly.body, false, "a text-only result must not gain a structure");
 
   // The same stop can land in the microseconds between resolveDirectTool and the call.
   // It is too narrow to hit by timing, so fail the first call once and check the route

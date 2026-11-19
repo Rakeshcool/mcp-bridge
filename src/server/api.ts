@@ -378,6 +378,8 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
           // True when the call only succeeded after reconnecting an idle-stopped server.
           ...(reconnected ? { reconnected: true } : {}),
           result: result.text,
+          // Structured output, as /mcp returns it, so both surfaces give a client the same contract.
+          ...(result.structuredContent ? { structuredContent: result.structuredContent } : {}),
           // Image blocks are returned as data URLs so a CLI, panel or model can
           // actually look at them instead of a "[image omitted]" placeholder.
           ...(result.images?.length
