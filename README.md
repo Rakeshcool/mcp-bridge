@@ -157,6 +157,15 @@ Tool metadata is passed through, not flattened: `tools/list` carries `title`, `o
 whenever the owning server publishes them, and a tool that returns `structuredContent` keeps it in the
 `tools/call` result alongside its text block.
 
+Tools of a server set to `hidden_until_mentioned` are not part of this endpoint: there is no conversation
+here in which to mention them, so they are absent from `tools/list` and calling one by name returns the same
+unknown-tool error as a name that does not exist.
+
+Every request leaves one line in the bridge logs — method, tool, duration, outcome, and `reconnect=yes` when
+the call only ran because an idle-stopped server was reconnected, for example
+`[mcp] tools/call blender__get_scene_info 96ms ok reconnect=yes`. Tool calls also appear in that server's
+Logs tab, which is where a client integration is usually diagnosed.
+
 ## Recipes (optional, any server)
 
 A **recipe** is a folder under `recipes/` with a `recipe.json`. It is either a list of **steps** (plain tool

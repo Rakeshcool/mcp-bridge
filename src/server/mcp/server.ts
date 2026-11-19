@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import type { Registry } from "../registry.ts";
+import type { CatalogEntry, Registry } from "../registry.ts";
 import type { ApprovalService } from "../approvals.ts";
 import type { ActivityStore, RoundRecord, StoredImage } from "../activity.ts";
 import type { BridgeSettings, ToolResult } from "../types.ts";
@@ -30,6 +30,17 @@ export interface McpEndpointContext {
   approvals: ApprovalService;
   activity: ActivityStore;
   getSettings: () => BridgeSettings;
+  /** Where request lines go; index.ts leaves this unset, so they reach the bridge log. */
+  log?: (line: string) => void;
+}
+
+/** What one request line reports besides its method and duration. */
+interface Trace {
+  tool?: string;
+  serverId?: string;
+  outcome?: string;
+  reconnected?: boolean;
+  detail?: string;
 }
 
 interface JsonRpcMessage {
@@ -37,6 +48,41 @@ interface JsonRpcMessage {
   id?: unknown;
   method?: unknown;
   params?: any;
+}
+
+/**
+ * One rule for this endpoint: a `hidden_until_mentioned` tool is not part of it. A stateless
+ * endpoint has no conversation in which the user could mention it, so it is omitted from
+ * `tools/list` and `tools/call` answers exactly as it would for a name that does not exist.
+ */
+function offered(entry: CatalogEntry): boolean {
+  return entry.visibility !== "hidden_until_mentioned";
+}
+
+/**
+ * A one-line reason for a failed tool result. Servers report errors in different shapes: a top-level
+ * `error`, one nested under `result`, or a `code`/`message` pair; a log line should carry that, not
+ * the whole JSON result.
+ */
+function errorSummary(result: ToolResult): string {
+  const structured = result.structuredContent;
+  if (structured) {
+    if (typeof structured.error === "string") return structured.error;
+    const nested = structured.result;
+    if (nested && typeof nested === "object" && typeof (nested as Record<string, unknown>).error === "string") {
+      return (nested as Record<string, unknown>).error as string;
+    }
+    const code = typeof structured.code === "string" ? structured.code : null;
+    const message = typeof structured.message === "string" ? structured.message : null;
+    if (message) return code ? `${code}: ${message}` : message;
+  }
+  return result.text;
+}
+
+function unknownTool(name: string): RpcFailure {
+  return new RpcFailure(-32602, `Unknown tool: ${name}`, {
+    hint: "Call tools/list for exposed names. Tools of a stopped server are missing until it reconnects.",
+  });
 }
 
 class RpcFailure extends Error {
@@ -99,9 +145,10 @@ function initializeResult(params: any): Record<string, unknown> {
   };
 }
 
-async function callTool(params: any, ctx: McpEndpointContext): Promise<Record<string, unknown>> {
+async function callTool(params: any, ctx: McpEndpointContext, trace: Trace): Promise<Record<string, unknown>> {
   const name = typeof params?.name === "string" ? params.name : "";
   if (!name) throw new RpcFailure(-32602, "tools/call requires params.name");
+  trace.tool = name;
   const rawArgs = params.arguments;
   if (rawArgs != null && (typeof rawArgs !== "object" || Array.isArray(rawArgs))) {
     throw new RpcFailure(-32602, "tools/call params.arguments must be an object");
@@ -109,12 +156,10 @@ async function callTool(params: any, ctx: McpEndpointContext): Promise<Record<st
   const args = rawArgs ?? {};
 
   const resolved = await ctx.registry.resolveDirectTool(name);
-  if (!resolved) {
-    throw new RpcFailure(-32602, `Unknown tool: ${name}`, {
-      hint: "Call tools/list for exposed names. Tools of a stopped server are missing until it reconnects.",
-    });
-  }
+  if (!resolved) throw unknownTool(name);
   const entry = resolved.entry;
+  trace.serverId = entry.serverId;
+  if (!offered(entry)) throw unknownTool(name);
 
   const record = ctx.activity.create({ model: "mcp-endpoint", stream: false, injectedTools: 0 });
   const round: RoundRecord = { index: 0, finishReason: "tool_calls", toolCalls: [], assistantChars: 0 };
@@ -152,6 +197,8 @@ async function callTool(params: any, ctx: McpEndpointContext): Promise<Record<st
   if (denial) {
     note("denied", denial);
     ctx.activity.finish(record);
+    trace.outcome = "denied";
+    trace.detail = denial;
     return { content: [{ type: "text", text: denial }], isError: true };
   }
 
@@ -159,15 +206,22 @@ async function callTool(params: any, ctx: McpEndpointContext): Promise<Record<st
   try {
     // The server can idle-stop in the gap between resolving the tool and this call, most easily
     // while an `ask` approval is pending.
-    ({ result } = await ctx.registry.callToolWithReconnect(
+    const outcome = await ctx.registry.callToolWithReconnect(
       entry.serverId, entry.toolName, args, ctx.getSettings().toolTimeoutMs, resolved.reconnected,
-    ));
+    );
+    result = outcome.result;
+    trace.reconnected = outcome.reconnected;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     note("error", message);
     ctx.activity.finish(record, message);
+    trace.outcome = "error";
+    trace.detail = message;
     return { content: [{ type: "text", text: `Tool execution failed: ${message}` }], isError: true };
   }
+
+  trace.outcome = result.isError ? "error" : "ok";
+  if (result.isError) trace.detail = errorSummary(result);
 
   note(
     result.isError ? "error" : "ok",
@@ -188,7 +242,7 @@ async function callTool(params: any, ctx: McpEndpointContext): Promise<Record<st
   return result.isError ? { ...payload, isError: true } : payload;
 }
 
-async function dispatch(message: JsonRpcMessage, ctx: McpEndpointContext): Promise<unknown> {
+async function dispatch(message: JsonRpcMessage, ctx: McpEndpointContext, trace: Trace): Promise<unknown> {
   switch (message.method) {
     case "initialize":
       return initializeResult(message.params);
@@ -198,7 +252,7 @@ async function dispatch(message: JsonRpcMessage, ctx: McpEndpointContext): Promi
       return {
         tools: ctx.registry
           .injectable()
-          .filter((entry) => entry.visibility !== "hidden_until_mentioned")
+          .filter(offered)
           .map((entry) => ({
             name: entry.exposedName,
             // Everything the owning server published travels with the tool, so a client here
@@ -211,7 +265,7 @@ async function dispatch(message: JsonRpcMessage, ctx: McpEndpointContext): Promi
           })),
       };
     case "tools/call":
-      return callTool(message.params, ctx);
+      return callTool(message.params, ctx, trace);
     default:
       throw new RpcFailure(-32601, `Method not found: ${String(message.method)}`);
   }
@@ -219,8 +273,29 @@ async function dispatch(message: JsonRpcMessage, ctx: McpEndpointContext): Promi
 
 /** Entry point for `/mcp`: JSON-RPC over POST, plus the GET/DELETE answers a Streamable HTTP client expects. */
 export async function handleMcpEndpoint(req: IncomingMessage, res: ServerResponse, ctx: McpEndpointContext): Promise<void> {
+  const startedAt = Date.now();
+  const trace: Trace = {};
+  // One line per request, so a client integration can be read off the bridge logs: method, tool,
+  // duration, outcome, and whether the call only worked because the server was reconnected.
+  const log = (method: string, outcome: string): void => {
+    const parts = ["[mcp]", method];
+    if (trace.tool) parts.push(trace.tool);
+    parts.push(`${Date.now() - startedAt}ms`, outcome);
+    if (trace.reconnected) parts.push("reconnect=yes");
+    if (trace.detail) parts.push(`(${trace.detail.slice(0, 120)})`);
+    const line = parts.join(" ");
+    (ctx.log ?? ((text: string) => console.log(text)))(line);
+    // A tool call also lands in the owning server's Logs tab, next to that server's own lines.
+    if (trace.serverId) ctx.registry.appendLog(trace.serverId, "info", line);
+  };
+  const fail = (method: string, failure: RpcFailure): void => {
+    trace.detail = failure.message;
+    log(method, `error ${failure.code}`);
+  };
+
   const origin = req.headers.origin;
   if (origin && !LOOPBACK_ORIGIN.test(String(origin))) {
+    log(req.method ?? "-", "403 cross-origin");
     sendJson(res, 403, {
       jsonrpc: "2.0",
       id: null,
@@ -231,11 +306,13 @@ export async function handleMcpEndpoint(req: IncomingMessage, res: ServerRespons
 
   if (req.method === "DELETE") {
     // Accepted for spec completeness: this endpoint keeps no session state, so there is nothing to close.
+    log("DELETE", "200 no-op");
     sendJson(res, 200, { jsonrpc: "2.0", result: {} });
     return;
   }
 
   if (req.method !== "POST") {
+    log(req.method ?? "-", "405");
     res.writeHead(405, { allow: "POST, DELETE", "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" });
     res.end(
       req.method === "GET" || req.method === "HEAD"
@@ -250,12 +327,15 @@ export async function handleMcpEndpoint(req: IncomingMessage, res: ServerRespons
     message = await readJsonBody(req);
   } catch (error) {
     const failure = error instanceof RpcFailure ? error : new RpcFailure(-32700, (error as Error).message);
+    fail("POST", failure);
     sendJson(res, 200, errorResponse(null, failure));
     return;
   }
 
   if (Array.isArray(message)) {
-    sendJson(res, 200, errorResponse(null, new RpcFailure(-32600, "Batch requests are not supported; send one message per request")));
+    const failure = new RpcFailure(-32600, "Batch requests are not supported; send one message per request");
+    fail("POST", failure);
+    sendJson(res, 200, errorResponse(null, failure));
     return;
   }
   if (
@@ -265,21 +345,27 @@ export async function handleMcpEndpoint(req: IncomingMessage, res: ServerRespons
     !message.method ||
     (message.jsonrpc !== undefined && message.jsonrpc !== "2.0")
   ) {
-    sendJson(res, 200, errorResponse(message?.id, new RpcFailure(-32600, "Invalid JSON-RPC request: expected {\"jsonrpc\":\"2.0\", method, id}")));
+    const failure = new RpcFailure(-32600, "Invalid JSON-RPC request: expected {\"jsonrpc\":\"2.0\", method, id}");
+    fail("POST", failure);
+    sendJson(res, 200, errorResponse(message?.id, failure));
     return;
   }
 
   if (!Object.prototype.hasOwnProperty.call(message, "id")) {
     // Notifications (notifications/initialized, notifications/cancelled, …) need no reply.
+    log(message.method, "notified");
     res.writeHead(202, { "cache-control": "no-store" });
     res.end();
     return;
   }
 
   try {
-    sendJson(res, 200, { jsonrpc: "2.0", id: message.id, result: await dispatch(message, ctx) });
+    const result = await dispatch(message, ctx, trace);
+    log(message.method, trace.outcome ?? "ok");
+    sendJson(res, 200, { jsonrpc: "2.0", id: message.id, result });
   } catch (error) {
     const failure = error instanceof RpcFailure ? error : new RpcFailure(-32603, (error as Error).message || "Internal error");
+    fail(message.method, failure);
     sendJson(res, 200, errorResponse(message.id, failure));
   }
 }

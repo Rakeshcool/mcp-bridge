@@ -116,6 +116,8 @@ export interface AppState {
   approvals: ApprovalRequest[];
   activity: ActivityRecord[];
   catalog: unknown[];
+  /** Where other MCP clients connect, as published by GET /api/state. */
+  mcp: { path: string; protocolVersion: string; transport: string; sse: boolean };
   platform: string;
 }
 

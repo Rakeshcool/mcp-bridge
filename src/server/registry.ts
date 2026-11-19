@@ -470,6 +470,14 @@ export class Registry {
     this.runtime(id).logs.clear();
   }
 
+  /** Appends a bridge-side line (an /mcp request, say) to one server's log, where its tab shows it. */
+  appendLog(serverId: string, level: string, message: string): void {
+    const runtime = this.runtimes.get(serverId);
+    if (!runtime) return;
+    runtime.logs.push(level, message);
+    this.emit("log", { serverId, level, message });
+  }
+
   /**
    * Look up a direct call by exposed name, reconnecting the owning server when an idle
    * stop removed its tools from the catalog. Returns `null` when the name genuinely does

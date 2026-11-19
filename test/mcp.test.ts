@@ -74,11 +74,14 @@ let settings: BridgeSettings = {
 
 const approvals = new ApprovalService(events, 10000);
 const activity = new ActivityStore(events);
+/** Request lines the endpoint would otherwise write to the bridge log. */
+const requestLog: string[] = [];
 const ctx = {
   registry,
   events,
   approvals,
   activity,
+  log: (line: string) => requestLog.push(line),
   getSettings: () => settings,
   setSettings: (next: BridgeSettings) => {
     settings = next;
@@ -429,6 +432,29 @@ test("cross-origin requests are refused and loopback origins are allowed", async
   assert.deepEqual(JSON.parse(loopback.text).result, {});
 });
 
+test("a hidden tool is absent from tools/list and refused by name", async () => {
+  await ensureConnected();
+  const server = registry.find("echo");
+  assert.ok(server);
+  try {
+    server.visibility = "hidden_until_mentioned";
+    const listed = await rpc("tools/list", {});
+    assert.equal(listed.body.result.tools.length, 0, "a hidden tool must not be listed");
+
+    // Same answer as a name that does not exist, so hiding cannot be probed for.
+    const called = await rpc("tools/call", { name: TOOL, arguments: { text: "hidden" } });
+    assert.equal(called.body.error.code, -32602);
+    assert.equal(called.body.error.message, `Unknown tool: ${TOOL}`);
+  } finally {
+    server.visibility = "normal";
+  }
+
+  const listedAgain = await rpc("tools/list", {});
+  assert.equal(listedAgain.body.result.tools.length, 4, "the tool returns once the server is visible again");
+  const call = await rpc("tools/call", { name: TOOL, arguments: { text: "visible" } });
+  assert.equal(call.body.result.content[0].text, "echo: visible");
+});
+
 test("permission levels decide what /mcp runs", async () => {
   await ensureConnected();
   registry.patchTool(TOOL, { permission: "deny" });
@@ -468,6 +494,45 @@ test("structured results keep structuredContent next to the text", async () => {
 
   const plain = await rpc("tools/call", { name: TOOL, arguments: { text: "no structure" } });
   assert.equal("structuredContent" in plain.body.result, false, "a text-only result must not gain a structure");
+});
+
+test("every /mcp request leaves one log line with its outcome", async () => {
+  await ensureConnected();
+
+  requestLog.length = 0;
+  await rpc("tools/list", {});
+  assert.equal(requestLog.length, 1, JSON.stringify(requestLog));
+  assert.match(requestLog[0], /^\[mcp\] tools\/list \d+ms ok$/);
+
+  requestLog.length = 0;
+  await rpc("tools/call", { name: TOOL, arguments: { text: "logged" } });
+  assert.equal(requestLog.length, 1, JSON.stringify(requestLog));
+  assert.match(requestLog[0], /^\[mcp\] tools\/call echo__say \d+ms ok$/);
+  assert.ok(
+    registry.logs("echo").some((entry) => entry.message === requestLog[0]),
+    "the same line lands in the owning server's Logs tab",
+  );
+
+  // A refused call says so, and keeps the reason next to it.
+  registry.patchTool(TOOL, { permission: "deny" });
+  try {
+    requestLog.length = 0;
+    await rpc("tools/call", { name: TOOL, arguments: { text: "x" } });
+    assert.match(requestLog[0], /^\[mcp\] tools\/call echo__say \d+ms denied \(Permission denied/);
+  } finally {
+    registry.patchTool(TOOL, { permission: "allow" });
+  }
+
+  // The line records the reconnect that made the call work.
+  await waitFor("the stub to idle-stop", () => registry.view("echo").status === "disconnected");
+  requestLog.length = 0;
+  await rpc("tools/call", { name: TOOL, arguments: { text: "reconnected" } });
+  assert.match(requestLog[0], /^\[mcp\] tools\/call echo__say \d+ms ok reconnect=yes$/);
+
+  // Failures keep their JSON-RPC code.
+  requestLog.length = 0;
+  await rpc("tools/call", { name: "echo__nope", arguments: {} });
+  assert.match(requestLog[0], /^\[mcp\] tools\/call echo__nope \d+ms error -32602 \(Unknown tool/);
 });
 
 test("image blocks keep their mime type and bytes, and tool errors stay errors", async () => {

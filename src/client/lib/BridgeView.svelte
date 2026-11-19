@@ -25,6 +25,7 @@
   });
 
   const baseUrl = $derived(typeof location !== "undefined" ? `${location.origin}/v1` : "http://127.0.0.1:7800/v1");
+  const mcpUrl = $derived(`${typeof location !== "undefined" ? location.origin : "http://127.0.0.1:7800"}${appState?.mcp?.path ?? "/mcp"}`);
   const activity = $derived(appState?.activity ?? []);
 
   async function saveSettings(): Promise<void> {
@@ -47,6 +48,15 @@
       onflash("base_url copied");
     } catch {
       onflash(baseUrl);
+    }
+  }
+
+  async function copyMcpUrl(): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(mcpUrl);
+      onflash("MCP endpoint copied");
+    } catch {
+      onflash(mcpUrl);
     }
   }
 
@@ -74,6 +84,18 @@
         <p class="mt-1 text-[11px] text-dim">
           Point a client here instead of at the llama-server port. It needs no <code class="mono">tools</code> of its own — the bridge
           injects the enabled MCP tools and runs the calls.
+        </p>
+      </div>
+
+      <div class="mt-2 rounded-lg border border-edge bg-panel-2 p-2.5">
+        <div class="flex items-center gap-2">
+          <span class="text-[11px] uppercase tracking-wide text-dim">MCP endpoint for other MCP clients</span>
+          <button class="ml-auto rounded border border-edge px-2 py-0.5 text-[11px] text-accent hover:bg-edge" onclick={copyMcpUrl}>copy</button>
+        </div>
+        <code class="mono mt-1 block break-all text-xs text-ink">{mcpUrl}</code>
+        <p class="mt-1 text-[11px] text-dim">
+          Register this URL as a Streamable HTTP MCP server. It serves the same tools, permissions and idle reconnects as the chat path,
+          and needs no API key — it only answers on this machine.
         </p>
       </div>
     </div>
