@@ -78,6 +78,8 @@ export interface ToolResult {
 export interface ServerRuntimeView {
   status: MCPStatus;
   pid: number | null;
+  /** Absolute executable launched for a stdio server, after PATH resolution. */
+  resolvedCommand?: string | null;
   lastConnected: string | null;
   lastError: string | null;
   connectedAt: string | null;

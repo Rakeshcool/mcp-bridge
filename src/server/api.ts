@@ -8,7 +8,7 @@ import { authRef, deleteServerSecrets, envRef, getSecret, headerRef, setSecret }
 import type { Registry } from "./registry.ts";
 import type { ApprovalService } from "./approvals.ts";
 import type { ActivityStore } from "./activity.ts";
-import type { BridgeSettings, HttpConnection, MCPServerConfig, StdioConnection } from "./types.ts";
+import type { BridgeSettings, HttpConnection, MCPServerConfig, StdioConnection, ToolResult } from "./types.ts";
 import { runChat } from "./bridge.ts";
 import { upstreamStatus } from "./upstream.ts";
 import { DEFAULT_PORT } from "./constants.ts";
@@ -24,6 +24,11 @@ export interface ApiContext {
 
 const MASK = "••••";
 const MAX_BODY = 1_048_576;
+
+// Raised by Registry.callTool when the server stopped between discovery and the call.
+function isNotConnected(error: unknown): boolean {
+  return error instanceof Error && error.message.startsWith("MCP_SERVER_NOT_CONNECTED");
+}
 
 function sendJson(res: ServerResponse, status: number, payload: unknown): void {
   const body = JSON.stringify(payload);
@@ -337,14 +342,17 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
       // object itself or {"arguments": {...}}.
       if (parts.length === 3 && parts[2] === "call" && req.method === "POST") {
         const exposedName = decodeURIComponent(parts[1]);
-        const entry = ctx.registry.catalog().find((item) => item.exposedName === exposedName);
-        if (!entry) {
+        // Reconnects the owning server when an idle stop hid the tool from the catalog.
+        const resolved = await ctx.registry.resolveDirectTool(exposedName);
+        if (!resolved) {
           throw new ApiError(
             "MCP_TOOL_NOT_FOUND",
-            `Unknown tool: ${exposedName}. Connect the owning server first, then read GET /api/tools for exposed names.`,
+            `Unknown tool: ${exposedName}. Read GET /api/tools for exposed names; tools of idle-stopped servers are reconnected automatically on the next direct call.`,
             404,
           );
         }
+        const entry = resolved.entry;
+        let reconnected = resolved.reconnected;
         if (!entry.enabled) throw new ApiError("MCP_PERMISSION_DENIED", `Tool ${exposedName} is disabled`, 403);
         if (entry.permission !== "allow") {
           throw new ApiError(
@@ -357,8 +365,19 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
         const raw = await readJson(req);
         const args = raw && typeof raw === "object" && "arguments" in raw ? (raw as Record<string, unknown>).arguments : raw;
         const server = ctx.registry.find(entry.serverId);
+        const timeoutMs = server?.toolTimeoutMs ?? 60000;
         const startedAt = Date.now();
-        const result = await ctx.registry.callTool(entry.serverId, entry.toolName, args ?? {}, server?.toolTimeoutMs ?? 60000);
+        let result: ToolResult;
+        try {
+          result = await ctx.registry.callTool(entry.serverId, entry.toolName, args ?? {}, timeoutMs);
+        } catch (error) {
+          // The server can idle-stop in the gap between discovery and the call itself.
+          // Reconnect once and retry, rather than handing the caller a dead end.
+          if (reconnected || !isNotConnected(error)) throw error;
+          await ctx.registry.connect(entry.serverId);
+          reconnected = true;
+          result = await ctx.registry.callTool(entry.serverId, entry.toolName, args ?? {}, timeoutMs);
+        }
         sendJson(res, 200, {
           ok: !result.isError,
           tool: exposedName,
@@ -366,6 +385,8 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
           toolName: entry.toolName,
           durationMs: Date.now() - startedAt,
           isError: result.isError,
+          // True when the call only succeeded after reconnecting an idle-stopped server.
+          ...(reconnected ? { reconnected: true } : {}),
           result: result.text,
           // Image blocks are returned as data URLs so a CLI, panel or model can
           // actually look at them instead of a "[image omitted]" placeholder.

@@ -87,10 +87,24 @@ node scripts/mcp.mjs describe filesystem__read_file
 
 ```bash
 node scripts/mcp.mjs servers                                # what is configured?
+node scripts/mcp.mjs add <id> --command uvx --args pkg      # create a server, then connect it
+node scripts/mcp.mjs test <serverId>                        # connect, report status/tools, restore state
+node scripts/mcp.mjs doctor [serverId]                      # resolved executable, status, tools, recent logs
+node scripts/mcp.mjs remove <serverId>                      # delete a server and its stored secrets
 node scripts/mcp.mjs call <serverId>__<toolName>
 node scripts/mcp.mjs call <serverId>__<toolName> '{"arg":1}'
 echo '{"arg":1}' | node scripts/mcp.mjs call <serverId>__<toolName> -
 ```
+
+`add` takes the launch details: `--command <exe>` with `--args <a> [b ...]` for a local stdio server, or
+`--url <url>` with repeatable `--header KEY=VALUE` for a remote Streamable HTTP one. `--env KEY=VALUE` is
+repeatable and plain config, so keep tokens in the panel; `--name`, `--description` and `--no-connect` are
+optional. `doctor` prints the executable actually launched (after PATH resolution), the status, the tools
+and the last log lines (`--lines <n>`, default 20), and works with the bridge stopped; it exits `1` when a
+server is broken.
+
+`--args` stops at the next `--flag`; a bare `--` ends option parsing and everything after it is a server
+argument, so a flag such as `--port 8080` can be passed: `--args app.mjs -- --port 8080`.
 
 There is no vendor-specific tool name in this file on purpose: the bridge works with whatever servers you
 configure, and every tool is addressed as `serverId__toolName`.
@@ -162,9 +176,9 @@ other way it refuses and tells you so, rather than killing a process it does not
 >   code into a JSON string.
 > - For a repeatable multi-step job use `node scripts/mcp.mjs recipe <name> <spec.json>` when a recipe
 >   exists for that server. A recipe verifies its own work and exits `1` when it could not.
-> - Servers stop themselves after 5 minutes idle (`IDLE STOP (S)` = 300). If a call returns
->   `MCP_TOOL_NOT_FOUND: Unknown tool …`, run `node scripts/mcp.mjs up` again to reconnect — that is not a
->   real failure.
+> - Servers stop themselves after 5 minutes idle (`IDLE STOP (S)` = 300). A direct `call` reconnects the
+>   owning server by itself and returns `"reconnected": true`, so do not re-run `up` after every call. Only
+>   discovery (`tools`, `describe`, `script`, `recipe`) needs `up` when it reports an idle-stopped server.
 > - Large bulk operations can exceed the 60 s MCP tool timeout while still succeeding in the background.
 >   After a timeout, re-read state instead of retrying blindly, or you will duplicate work.
 
@@ -190,7 +204,7 @@ other way it refuses and tells you so, rather than killing a process it does not
 | Symptom | Meaning | Fix |
 | --- | --- | --- |
 | `Bridge is not reachable at …` | not started | start it from the menu (`node scripts/menu.mjs`) or `node scripts/mcp.mjs up` |
-| `MCP_TOOL_NOT_FOUND: Unknown tool` | server idle-stopped | `node scripts/mcp.mjs up` |
+| `MCP_TOOL_NOT_FOUND: Unknown tool` | server idle-stopped | `call` reconnects on its own (`"reconnected": true`); `tools`/`describe`/`script`/`recipe` still need `node scripts/mcp.mjs up` |
 | HTTP 403 on `call` | tool is `ask`/`deny` | change the permission in the panel's Servers tab |
 | `Unknown tool: x` from the CLI | name not in the catalog | `node scripts/mcp.mjs tools` for exposed names |
 | `Several code-execution tools match` | auto-detection refused to guess | pass `--tool` or `--server` |

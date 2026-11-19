@@ -2,7 +2,7 @@ import { ApiError, validateToolSchema } from "./validate.ts";
 import { upstreamChat } from "./upstream.ts";
 import type { Registry, CatalogEntry } from "./registry.ts";
 import type { ApprovalService } from "./approvals.ts";
-import type { ActivityStore, ActivityRecord, ToolCallRecord } from "./activity.ts";
+import type { ActivityStore, ActivityRecord, StoredImage, ToolCallRecord } from "./activity.ts";
 import type { BridgeSettings } from "./types.ts";
 
 export interface BridgeRunResult {
@@ -176,6 +176,7 @@ export async function runChat(params: RunParams): Promise<BridgeRunResult> {
 
         let text: string;
         let status: ToolCallRecord["status"];
+        let images: StoredImage[] = [];
         if (!approved) {
           text = "Permission denied: the user declined this tool call. Do not retry it without asking.";
           status = "denied";
@@ -184,6 +185,10 @@ export async function runChat(params: RunParams): Promise<BridgeRunResult> {
             const result = await registry.callTool(entry.serverId, entry.toolName, args, settings.toolTimeoutMs);
             text = result.isError ? `Tool reported an error:\n${result.text}` : result.text;
             status = result.isError ? "error" : "ok";
+            // The model only sees text; the panel shows a couple of thumbnails per call.
+            images = (result.images ?? [])
+              .slice(0, 2)
+              .map((image) => ({ mimeType: image.mimeType, dataUrl: `data:${image.mimeType};base64,${image.data}` }));
           } catch (error) {
             text = `Tool execution failed: ${(error as Error).message}`;
             status = "error";
@@ -200,6 +205,7 @@ export async function runChat(params: RunParams): Promise<BridgeRunResult> {
           status,
           durationMs: Date.now() - startedAt,
           result: text.slice(0, 800),
+          ...(images.length ? { images } : {}),
         });
         messages.push({ role: "tool", tool_call_id: call.id, name, content: text });
       }

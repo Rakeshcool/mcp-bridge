@@ -91,6 +91,10 @@ curl -s http://127.0.0.1:7800/api/tools/<serverId>__<toolName> -X POST -d '{}'
 Only tools whose permission is `allow` accept direct calls; `ask` and `deny` return **403** with an
 explanation, because no one is there to answer an approval prompt.
 
+If the owning server idle-stopped, the call reconnects it and retries once instead of returning
+`MCP_TOOL_NOT_FOUND`, and the envelope says so with `"reconnected": true`. That only covers the call
+itself: `GET /api/tools` still lists connected servers only, so a discovery step may need a Connect.
+
 Results are text, plus images when a server returns them (screenshots, renders, captures):
 
 ```jsonc
@@ -110,6 +114,10 @@ node scripts/menu.mjs                     # menu: start / stop / status in one s
 node scripts/mcp.mjs up                    # start if needed, connect enabled servers
 node scripts/mcp.mjs servers               # configured servers, transport, status, tools
 node scripts/mcp.mjs connect <serverId>    # connect one server
+node scripts/mcp.mjs add <id> --command uvx --args pkg   # create a server, then connect it
+node scripts/mcp.mjs test <serverId>       # connect, report status/tools, restore state
+node scripts/mcp.mjs doctor [serverId]     # resolved executable, status, tools, recent logs
+node scripts/mcp.mjs remove <serverId>     # delete a server and its stored secrets
 node scripts/mcp.mjs tools                 # list callable tools
 node scripts/mcp.mjs describe <exposedName>
 node scripts/mcp.mjs call <exposedName> '{"arg":1}'
@@ -118,6 +126,9 @@ node scripts/mcp.mjs recipe <name> spec.json # bundled workflow (see recipes/)
 node scripts/mcp.mjs status
 node scripts/mcp.mjs down                  # stops only a bridge this script started
 ```
+
+`--args` stops at the next `--flag`; a bare `--` ends option parsing and everything after it is a server
+argument, so a flag such as `--port 8080` can be passed: `--args app.mjs -- --port 8080`.
 
 `call` saves any image results to `data/images/` and lists them under `images` in its JSON output.
 

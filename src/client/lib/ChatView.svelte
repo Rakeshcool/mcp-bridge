@@ -1,6 +1,7 @@
 <script lang="ts">
   import { call } from "./api.ts";
-  import type { ActivityRecord, AppState, ToolCallRecord } from "./api.ts";
+  import type { ActivityRecord, AppState, ToolCallRecord, ToolImagePreview } from "./api.ts";
+  import ToolImages from "./ToolImages.svelte";
 
   interface Props {
     appState: AppState | null;
@@ -169,6 +170,7 @@
           status: result.isError ? "error" : "ok",
           durationMs: Number(result.durationMs ?? 0),
           result: String(result.result ?? ""),
+          ...(result.images?.length ? { images: result.images as ToolImagePreview[] } : {}),
         },
       ];
       messages = [...messages];
@@ -283,6 +285,7 @@
                         <p class="mono mt-1 break-all text-[10px] text-dim">{toolCall.args}</p>
                       {/if}
                       <p class="mono mt-1 max-h-32 overflow-y-auto whitespace-pre-wrap break-words text-[10px] text-muted">{toolCall.result}</p>
+                      <ToolImages images={toolCall.images} name={toolCall.toolName || toolCall.name} />
                     </li>
                   {/each}
                 </ul>

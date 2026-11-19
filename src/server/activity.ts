@@ -1,6 +1,12 @@
 import { randomUUID } from "node:crypto";
 import type { EventEmitter } from "node:events";
 
+export interface StoredImage {
+  mimeType: string;
+  /** The data URL the panel renders and saves; already base64 with its prefix. */
+  dataUrl: string;
+}
+
 export interface ToolCallRecord {
   name: string;
   serverId: string;
@@ -10,6 +16,7 @@ export interface ToolCallRecord {
   status: "ok" | "error" | "denied" | "skipped";
   durationMs: number;
   result: string;
+  images?: StoredImage[];
 }
 
 export interface RoundRecord {
@@ -59,6 +66,14 @@ export class ActivityStore {
     };
     this.items.unshift(record);
     if (this.items.length > this.limit) this.items.length = this.limit;
+    // Tool images are megabytes of base64, so only the newest record keeps them. The
+    // panel copies them into its own message list as soon as its run finishes, which is
+    // the only reader; older runs stay readable as text.
+    for (const item of this.items.slice(1)) {
+      for (const round of item.rounds) {
+        for (const call of round.toolCalls) call.images = undefined;
+      }
+    }
     return record;
   }
 

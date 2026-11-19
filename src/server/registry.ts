@@ -110,6 +110,7 @@ export class Registry {
   }
 
   async removeServer(id: string): Promise<void> {
+    if (!this.find(id)) throw new ApiError("MCP_SERVER_NOT_FOUND", `Unknown server: ${id}`, 404);
     const runtime = this.runtimes.get(id);
     if (runtime?.client) {
       try {
@@ -420,6 +421,7 @@ export class Registry {
     return {
       status: runtime.status,
       pid: runtime.pid,
+      resolvedCommand: runtime.client?.resolvedCommand ?? null,
       lastConnected: runtime.lastConnected,
       lastError: runtime.lastError,
       connectedAt: runtime.connectedAt,
@@ -438,6 +440,35 @@ export class Registry {
   clearLogs(id: string): void {
     if (!this.find(id)) throw new ApiError("MCP_SERVER_NOT_FOUND", `Unknown server: ${id}`, 404);
     this.runtime(id).logs.clear();
+  }
+
+  /**
+   * Look up a direct call by exposed name, reconnecting the owning server when an idle
+   * stop removed its tools from the catalog. Returns `null` when the name genuinely does
+   * not exist, so callers keep reporting the ordinary MCP_TOOL_NOT_FOUND.
+   */
+  async resolveDirectTool(exposedName: string): Promise<{ entry: CatalogEntry; reconnected: boolean } | null> {
+    const found = this.catalog().find((item) => item.exposedName === exposedName);
+    if (found) return { entry: found, reconnected: false };
+
+    // The catalog only lists tools of connected servers, so an idle stop looks exactly
+    // like a typo. Resolve the owner from the `serverId__toolName` prefix instead.
+    const owner = this.servers
+      .filter((server) => exposedName.startsWith(`${server.id}__`))
+      .sort((a, b) => b.id.length - a.id.length)[0];
+    if (!owner || !owner.enabled) return null;
+    const status = this.runtime(owner.id).status;
+    // Still connected means the tool really is gone; starting means a connect is already
+    // in flight and this call must not race it.
+    if (status === "connected" || status === "starting") return null;
+
+    const runtime = this.runtime(owner.id);
+    runtime.logs.push("info", `direct call to ${exposedName} — reconnecting idle-stopped server`);
+    this.emit("log", { serverId: owner.id, level: "info", message: "reconnecting for a direct tool call" });
+    await this.connect(owner.id);
+
+    const recovered = this.catalog().find((item) => item.exposedName === exposedName);
+    return recovered ? { entry: recovered, reconnected: true } : null;
   }
 
   async callTool(serverId: string, toolName: string, args: unknown, timeoutMs: number): Promise<ToolResult> {

@@ -13,6 +13,10 @@
  *   node scripts/mcp.mjs call <tool> '{"a":1}'
  *   node scripts/mcp.mjs script probe.py    # pipe a file into any code-execution tool
  *   node scripts/mcp.mjs recipe <name> spec.json   # bundled multi-step workflow
+ *   node scripts/mcp.mjs add <id> --command <exe> [--args ...]
+ *   node scripts/mcp.mjs remove <id>
+ *   node scripts/mcp.mjs test <id>
+ *   node scripts/mcp.mjs doctor [serverId]
  *   node scripts/mcp.mjs status
  *   node scripts/mcp.mjs down
  *
@@ -35,6 +39,10 @@ const SERVER_ENTRY = path.join(ROOT, "src", "server", "index.ts");
 const RECIPES_DIR = path.join(ROOT, "recipes");
 const DEFAULT_PORT = 7800;
 
+// Options that never make sense as `add --args` values: seeing one after --args means the
+// arguments were written without a `--` terminator.
+const BRIDGE_ONLY_FLAGS = new Set(["--port", "--base", "--timeout", "--tool", "--server", "--transport", "--lines", "--help", "-h"]);
+
 const HELP = `mcp.mjs — drive the MCP bridge from any agent
 
 USAGE
@@ -50,6 +58,12 @@ COMMANDS
   call <tool> [args]     Call a tool. args is a JSON object, or "-" to read stdin.
   servers                Configured servers with transport, status and tool count.
   connect <serverId>     Connect one server (up connects every enabled one).
+  add <id>               Create a server through the API, then connect it:
+                         --command <exe> [--args ...] for stdio, or --url <url>.
+  remove <id>            Delete a server and its stored secrets.
+  test <id>              Connect, report status and tools, restore prior state.
+  doctor [serverId]      Diagnose servers: resolved executable, status, tools,
+                         recent log lines and hints. Works with the bridge down.
   script <file|->        Send a file to a code-execution tool. Picks the tool from
                          --tool, or the only code tool on --server.
   recipe <name> [spec]   Run recipes/<name>/kit.py through the server its
@@ -62,6 +76,17 @@ OPTIONS
   --no-connect           With "up": do not connect servers.
   --server <id>          With "script": limit auto-detection to one server.
   --tool <name>          Exposed name (serverId__tool) or bare tool name.
+  --command <exe>        With "add": executable for a stdio server.
+  --args <a> [b ...]     With "add": arguments, until the next --flag.
+  --                     Everything after it is a server argument, so a flag such as
+                         --port 8080 can be passed: --args app.mjs -- --port 8080
+  --env KEY=VALUE        With "add": environment entry (repeatable; plain config,
+                         keep tokens in the panel instead).
+  --url <url>            With "add": remote Streamable HTTP endpoint.
+  --header KEY=VALUE     With "add": HTTP header (repeatable).
+  --name <text>          With "add": display name (defaults to the id).
+  --description <text>   With "add": description.
+  --lines <n>            With "doctor": log lines to show (default 20).
   --help                 This text.
 
 EXIT CODES
@@ -85,18 +110,109 @@ function note(message) {
   process.stderr.write(`[mcp] ${message}\n`);
 }
 
+// ---------------------------------------------------------------- schema-aware arguments
+// Tools generated from JSON Schema often set additionalProperties: false, so an argument
+// the tool never declared fails on the server ("unknown fields"). Drop undeclared keys
+// locally instead and report what was dropped.
+function schemaArgs(schema, args) {
+  const source = args && typeof args === "object" && !Array.isArray(args) ? args : {};
+  const properties =
+    schema && typeof schema === "object" && schema.properties && typeof schema.properties === "object"
+      ? schema.properties
+      : null;
+  if (!properties) return { args: source, dropped: [] };
+  const allowExtra = schema.additionalProperties !== false;
+  const kept = {};
+  const dropped = [];
+  for (const [key, value] of Object.entries(source)) {
+    if (allowExtra || Object.prototype.hasOwnProperty.call(properties, key)) kept[key] = value;
+    else dropped.push(key);
+  }
+  return { args: kept, dropped };
+}
+
+// The payload for a code-execution tool: the code field its schema names, plus a timeout
+// only when the tool declares one. `timeout` is not a universal MCP argument.
+function codeArguments(entry, code, opts) {
+  const args = { [codeField(entry.inputSchema)]: code };
+  const properties = entry.inputSchema?.properties && typeof entry.inputSchema.properties === "object"
+    ? entry.inputSchema.properties
+    : {};
+  if (Object.prototype.hasOwnProperty.call(properties, "timeout")) {
+    args.timeout = Math.min(Math.floor(opts.timeout / 1000), 60);
+  }
+  const filtered = schemaArgs(entry.inputSchema, args);
+  if (filtered.dropped.length) note(`dropping undeclared argument(s): ${filtered.dropped.join(", ")}`);
+  return filtered.args;
+}
+
 function parseArgs(argv) {
-  const opts = { port: Number(process.env.PORT) || DEFAULT_PORT, base: null, timeout: 120000, connect: true, tool: null, server: null };
+  const opts = {
+    port: Number(process.env.PORT) || DEFAULT_PORT,
+    base: null,
+    timeout: 120000,
+    connect: true,
+    tool: null,
+    server: null,
+    args: [],
+    env: [],
+    header: [],
+    cmd: null,
+    url: null,
+    name: null,
+    description: null,
+    transport: null,
+    lines: 20,
+  };
   const positional = [];
+  // Everything after a bare `--` is a literal server argument, so a flag such as
+  // `--port 8080` reaches the server instead of being read as a CLI option.
+  let literalArgs = false;
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
+    if (literalArgs) {
+      opts.args.push(arg);
+      continue;
+    }
     if (arg === "--help" || arg === "-h") opts.help = true;
+    else if (arg === "--") literalArgs = true;
     else if (arg === "--port") opts.port = Number(argv[++i]) || DEFAULT_PORT;
     else if (arg === "--base") opts.base = argv[++i];
     else if (arg === "--timeout") opts.timeout = Number(argv[++i]) || 120000;
     else if (arg === "--no-connect") opts.connect = false;
     else if (arg === "--tool") opts.tool = argv[++i];
     else if (arg === "--server") opts.server = argv[++i];
+    else if (arg === "--command") opts.cmd = argv[++i];
+    else if (arg === "--url") opts.url = argv[++i];
+    else if (arg === "--name") opts.name = argv[++i];
+    else if (arg === "--description") opts.description = argv[++i];
+    else if (arg === "--transport") opts.transport = argv[++i];
+    else if (arg === "--lines") opts.lines = Number(argv[++i]) || 20;
+    else if (arg === "--args") {
+      const before = opts.args.length;
+      while (i + 1 < argv.length) {
+        const next = argv[i + 1];
+        if (next === "--") {
+          i += 1;
+          literalArgs = true;
+          break;
+        }
+        if (next.startsWith("--")) {
+          if (BRIDGE_ONLY_FLAGS.has(next)) {
+            fail(
+              `"${next}" would be read as a bridge option, not a server argument; put server arguments after a -- terminator: --args <value> -- ${next} ...`,
+              2,
+            );
+          }
+          break;
+        }
+        opts.args.push(argv[++i]);
+      }
+      if (opts.args.length === before && !literalArgs) {
+        fail("--args needs at least one value; for arguments that start with -- write --args -- <flags...>", 2);
+      }
+    } else if (arg === "--env") opts.env.push(argv[++i]);
+    else if (arg === "--header") opts.header.push(argv[++i]);
     else if (arg.startsWith("-") && arg !== "-") fail(`Unknown option: ${arg}`, 2);
     else positional.push(arg);
   }
@@ -378,6 +494,8 @@ async function callTool(opts, name, args) {
         server: payload.serverId,
         durationMs: payload.durationMs,
         isError: Boolean(payload.isError),
+        // The server was idle-stopped and the bridge reconnected it to run this call.
+        ...(payload.reconnected ? { reconnected: true } : {}),
         result: unwrap(result),
         ...(images.length ? { images } : {}),
         // Tools such as run_script also capture stdout; keep it visible.
@@ -400,7 +518,10 @@ async function commandCall(opts) {
   } catch (error) {
     fail(`Arguments must be a JSON object: ${error.message}`, 2);
   }
-  await callTool(opts, name, args);
+  const entry = await resolveTool(opts, name);
+  const filtered = schemaArgs(entry.inputSchema, args);
+  if (filtered.dropped.length) note(`dropping argument(s) the tool does not declare: ${filtered.dropped.join(", ")}`);
+  await callTool(opts, entry.exposedName, filtered.args);
 }
 
 // Code tools name their payload differently (script, code, source, command…).
@@ -459,10 +580,7 @@ async function commandScript(opts) {
   }
   if (!code.trim()) fail("Script is empty", 2);
   const entry = opts.tool ? await resolveTool(opts, opts.tool) : await autoTool(opts);
-  await callTool(opts, entry.exposedName, {
-    [codeField(entry.inputSchema)]: code,
-    timeout: Math.min(Math.floor(opts.timeout / 1000), 60),
-  });
+  await callTool(opts, entry.exposedName, codeArguments(entry, code, opts));
 }
 
 async function commandServers(opts) {
@@ -586,18 +704,298 @@ async function commandRecipe(opts) {
   let code = fs.readFileSync(kitPath, "utf8");
   code += specRaw ? `\nSPEC = json.loads(${JSON.stringify(specRaw)})\nresult = run(SPEC)\n` : "\nresult = run()\n";
   const entry = await resolveTool(opts, manifest.tool);
-  const payload = await callTool(opts, entry.exposedName, {
-    [codeField(entry.inputSchema)]: code,
-    timeout: Math.min(Math.floor(opts.timeout / 1000), 60),
-  });
+  const payload = await callTool(opts, entry.exposedName, codeArguments(entry, code, opts));
   // A recipe that ran but did not verify its own work is a failure.
   const body = unwrap(payload?.result);
   const outcome = body && typeof body === "object" ? (body.result ?? body) : null;
   if (outcome && outcome.ok === false) process.exitCode = 1;
 }
 
+// ---------------------------------------------------------------- add / remove / test / doctor
+async function fetchServer(opts, id) {
+  const payload = await request(opts, "GET", `/api/servers/${encodeURIComponent(id)}`);
+  return payload?.server ?? null;
+}
+
+function readServersFile() {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(DATA_DIR, "servers.json"), "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function parsePairs(list = []) {
+  const out = {};
+  for (const item of list) {
+    const at = String(item).indexOf("=");
+    if (at <= 0) fail(`Expected KEY=VALUE, got: ${item}`, 2);
+    out[String(item).slice(0, at)] = String(item).slice(at + 1);
+  }
+  return out;
+}
+
+async function commandAdd(opts) {
+  const id = opts.rest[0];
+  if (!id) fail("Usage: node scripts/mcp.mjs add <id> --command <exe> [--args ...] | --url <url>", 2);
+  const transport = opts.url ? "streamable_http" : (opts.transport ?? "stdio");
+  if (transport !== "stdio" && transport !== "streamable_http") {
+    fail(`Unknown transport: ${transport}; use stdio or streamable_http`, 2);
+  }
+
+  const body = {
+    id,
+    name: opts.name ?? id,
+    description: opts.description ?? "",
+    transport,
+    enabled: true,
+  };
+  if (transport === "stdio") {
+    if (!opts.cmd) fail("add <id> needs --command <executable> (or --url for a remote server)", 2);
+    body.connection = { command: opts.cmd, args: opts.args, env: parsePairs(opts.env) };
+  } else {
+    if (!opts.url) fail("The streamable_http transport needs --url", 2);
+    body.connection = { url: opts.url, headers: parsePairs(opts.header) };
+  }
+
+  let created;
+  try {
+    created = await request(opts, "POST", "/api/servers", body);
+  } catch (error) {
+    if (/DUPLICATE/i.test(error.message)) {
+      fail(`${error.message}. Remove it first: node scripts/mcp.mjs remove ${id}`, 1, { id, existing: true });
+    }
+    throw error;
+  }
+
+  const server = created?.server ?? null;
+  const out = {
+    ok: true,
+    created: true,
+    id: server?.id ?? id,
+    transport,
+    connection: transport === "stdio" ? { command: opts.cmd, args: opts.args } : { url: opts.url },
+    status: server?.runtime?.status ?? "disconnected",
+    tools: server?.runtime?.toolCount ?? 0,
+  };
+
+  if (opts.connect) {
+    try {
+      note(`connecting ${out.id}`);
+      await request(opts, "POST", `/api/servers/${encodeURIComponent(out.id)}/connect`);
+      const after = await fetchServer(opts, out.id);
+      out.status = after?.runtime?.status ?? "unknown";
+      out.tools = after?.runtime?.toolCount ?? 0;
+      out.resolvedCommand = after?.runtime?.resolvedCommand ?? null;
+      out.lastError = after?.runtime?.lastError ?? null;
+    } catch (error) {
+      out.status = "failed";
+      out.error = error.message;
+    }
+  }
+
+  console.log(JSON.stringify(out, null, 2));
+  if (out.status === "failed") process.exitCode = 1;
+}
+
+async function commandRemove(opts) {
+  const id = opts.rest[0];
+  if (!id) fail("Usage: node scripts/mcp.mjs remove <id>", 2);
+  const result = await request(opts, "DELETE", `/api/servers/${encodeURIComponent(id)}`);
+  console.log(JSON.stringify({ ok: true, removed: true, id: result?.id ?? id }, null, 2));
+}
+
+async function commandTest(opts) {
+  const id = opts.rest[0];
+  if (!id) fail("Usage: node scripts/mcp.mjs test <id>", 2);
+  const result = await request(opts, "POST", `/api/servers/${encodeURIComponent(id)}/test`);
+  // The API connects, reports, then restores the previous state.
+  const after = await fetchServer(opts, id).catch(() => null);
+  const out = {
+    ok: result?.ok !== false,
+    id,
+    status: result?.status ?? "unknown",
+    tools: result?.tools ?? 0,
+    resolvedCommand: after?.runtime?.resolvedCommand ?? null,
+    lastError: after?.runtime?.lastError ?? null,
+    restoredStatus: after?.runtime?.status ?? null,
+  };
+  console.log(JSON.stringify(out, null, 2));
+  if (!out.ok) process.exitCode = 1;
+}
+
+function isAbsolutePath(value) {
+  return /^[A-Za-z]:|^\\\\|^\//.test(String(value ?? ""));
+}
+
+// The runtime records the executable it launched; older bridges only logged it.
+function logResolvedCommand(logs) {
+  for (let i = logs.length - 1; i >= 0; i -= 1) {
+    const message = String(logs[i]?.message ?? "");
+    const match = /^launching:\s+(?:"([^"]+)"|(\S+))/.exec(message);
+    if (match) return match[1] ?? match[2];
+  }
+  return null;
+}
+
+function describeServer(view, opts, offline = false) {
+  const runtime = view.runtime ?? {};
+  const connection = view.connection ?? {};
+  const logs = Array.isArray(view.logs) ? view.logs : [];
+  const status = runtime.status ?? "unknown";
+  const hints = [];
+  const entry = {
+    id: view.id,
+    name: view.name,
+    enabled: view.enabled !== false,
+    transport: view.transport ?? "stdio",
+    status,
+    pid: runtime.pid ?? null,
+    connectedAt: runtime.connectedAt ?? null,
+    lastError: runtime.lastError ?? null,
+    tools: {
+      count: runtime.toolCount ?? 0,
+      enabled: runtime.enabledToolCount ?? null,
+      names: (runtime.tools ?? []).map((tool) => tool.exposedName ?? tool.name),
+    },
+    calls: runtime.calls ?? 0,
+    logs: logs.slice(-opts.lines).map((line) => `${line.level ?? "info"}: ${line.message ?? ""}`),
+    hints,
+  };
+
+  if ((view.transport ?? "stdio") === "stdio") {
+    const configured = connection.command ?? null;
+    const resolved = runtime.resolvedCommand ?? logResolvedCommand(logs);
+    let exists = null;
+    if (resolved) {
+      try {
+        exists = fs.existsSync(resolved);
+      } catch {
+        exists = null;
+      }
+    }
+    entry.command = {
+      configured,
+      args: connection.args ?? [],
+      cwd: connection.cwd || null,
+      envKeys: Object.keys(connection.env ?? {}),
+      secretEnv: connection.secretEnv ?? [],
+      resolved,
+      exists,
+      resolvedViaPath: Boolean(configured) && !isAbsolutePath(configured),
+    };
+    if (configured && !isAbsolutePath(configured)) {
+      hints.push(
+        `command "${configured}" comes from PATH${resolved ? ` and resolved to ${resolved}` : ""}; pin an absolute path so another project's launcher (a .uv/ or node_modules/.bin copy) cannot silently take over`,
+      );
+    }
+    if (resolved && exists === false) hints.push(`resolved executable no longer exists: ${resolved}`);
+    if (!resolved && status === "connected") hints.push("no launch path recorded yet; restart the server to record it");
+  } else {
+    entry.endpoint = {
+      url: connection.url ?? null,
+      headerKeys: Object.keys(connection.headers ?? {}),
+      verifyTls: connection.verifyTls !== false,
+      hasToken: connection.hasToken === true,
+    };
+  }
+
+  if (!entry.enabled) hints.push("server is disabled: enable it before connecting");
+  if (status === "error") {
+    const last = String(runtime.lastError ?? "");
+    if (/ENOENT|not recognized|not found|cannot find/i.test(last)) {
+      hints.push("the executable was not found or would not start; use an absolute --command path");
+    } else if (/timeout|timed out/i.test(last)) {
+      hints.push("handshake timed out; raise startupTimeoutMs (120000 suits slow launchers such as uvx/npx)");
+    } else if (last) {
+      hints.push("connect failed; read the log lines above");
+    }
+  }
+  if (status === "connected" && (runtime.toolCount ?? 0) === 0) hints.push("connected but advertised no tools");
+  if (status === "disconnected" && entry.enabled) hints.push(`not connected: node scripts/mcp.mjs connect ${view.id}`);
+  if (offline) hints.push("bridge not reachable: configuration only, no live status");
+  return entry;
+}
+
+async function commandDoctor(opts) {
+  const target = opts.rest[0] ?? null;
+  const state = await probe(opts);
+  const disk = readServersFile();
+  const report = { ok: true, baseUrl: opts.baseUrl, bridge: null, servers: [] };
+
+  if (state) {
+    report.bridge = {
+      reachable: true,
+      pid: readPid(),
+      panel: `${opts.baseUrl}/`,
+      tools: (state.catalog ?? []).length,
+      upstream: { reachable: state.upstream?.reachable ?? false, baseUrl: state.upstream?.baseUrl ?? null },
+    };
+  } else {
+    report.bridge = {
+      reachable: false,
+      hint: "start it: node scripts/mcp.mjs up",
+      configFile: path.join(DATA_DIR, "servers.json"),
+    };
+  }
+
+  const ids = target
+    ? [target]
+    : (state ? state.servers ?? [] : disk?.servers ?? []).map((server) => server.id);
+  if (!ids.length) {
+    report.hint = "no servers configured: node scripts/mcp.mjs add <id> --command <exe> --args <...>";
+  }
+
+  for (const id of ids) {
+    if (state) {
+      try {
+        const view = await fetchServer(opts, id);
+        if (!view) throw new Error(`Unknown server: ${id}`);
+        report.servers.push(describeServer(view, opts));
+      } catch (error) {
+        report.servers.push({ id, ok: false, error: error.message });
+      }
+      continue;
+    }
+    const config = (disk?.servers ?? []).find((server) => server.id === id);
+    if (!config) {
+      report.servers.push({ id, ok: false, error: `Unknown server: ${id}` });
+      continue;
+    }
+    report.servers.push(describeServer({ ...config, runtime: {}, logs: [] }, opts, true));
+  }
+
+  const problems = report.servers.filter(
+    (server) => server.error || server.status === "error" || (server.command && server.command.exists === false),
+  );
+  report.ok = Boolean(state) && problems.length === 0;
+  if (!report.ok) process.exitCode = 1;
+  console.log(JSON.stringify(report, null, 2));
+}
+
+// Positional arity per command: anything beyond it was not consumed by anyone.
+const ARITY = {
+  up: 0, down: 0, status: 0, tools: 0, servers: 0, help: 0,
+  add: 1, remove: 1, test: 1, connect: 1, describe: 1, script: 1, doctor: 1,
+  call: 2, recipe: 2,
+};
+
 async function main() {
   const opts = parseArgs(process.argv.slice(2));
+  const allowed = ARITY[opts.command];
+  if (allowed !== undefined && opts.rest.length > allowed) {
+    const extra = opts.rest.slice(allowed).join(" ");
+    fail(
+      `Unexpected argument(s): ${extra}`,
+      2,
+      opts.command === "add"
+        ? { command: "add", hint: "add takes one id; pass server arguments with --args <a> [b ...] and flags after --" }
+        : { command: opts.command, usage: `node scripts/mcp.mjs ${opts.command}` },
+    );
+  }
+  if (opts.args.length && opts.command !== "add") {
+    fail(`--args only applies to add, not ${opts.command}`, 2, { command: opts.command });
+  }
   switch (opts.command) {
     case "help":
       process.stdout.write(HELP);
@@ -622,6 +1020,14 @@ async function main() {
       return commandConnect(opts);
     case "recipe":
       return commandRecipe(opts);
+    case "add":
+      return commandAdd(opts);
+    case "remove":
+      return commandRemove(opts);
+    case "test":
+      return commandTest(opts);
+    case "doctor":
+      return commandDoctor(opts);
     default:
       process.stderr.write(HELP);
       fail(opts.command ? `Unknown command: ${opts.command}` : "No command given", 2);

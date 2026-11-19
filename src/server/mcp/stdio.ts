@@ -65,6 +65,7 @@ interface Pending {
 
 export class StdioClient implements MCPClient {
   pid: number | null = null;
+  resolvedCommand: string | null = null;
   private config: MCPServerConfig;
   private opts: MCPClientOptions;
   private child: ChildProcessWithoutNullStreams | null = null;
@@ -96,6 +97,7 @@ export class StdioClient implements MCPClient {
     if (!command) throw new Error("MCP_INVALID_CONFIG: command is required");
 
     const { file, args, verbatim } = resolveSpawn(command, conn.args ?? []);
+    this.resolvedCommand = file;
     const env: Record<string, string> = {};
     for (const [key, value] of Object.entries(process.env)) {
       if (typeof value === "string") env[key] = value;

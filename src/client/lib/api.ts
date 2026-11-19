@@ -67,6 +67,12 @@ export interface UpstreamStatus {
   error?: string;
 }
 
+export interface ToolImagePreview {
+  mimeType: string;
+  /** Ready to use as an <img src> and to save: base64 with its data: prefix. */
+  dataUrl: string;
+}
+
 export interface ToolCallRecord {
   name: string;
   serverId: string;
@@ -76,6 +82,7 @@ export interface ToolCallRecord {
   status: "ok" | "error" | "denied" | "skipped";
   durationMs: number;
   result: string;
+  images?: ToolImagePreview[];
 }
 
 export interface ActivityRecord {

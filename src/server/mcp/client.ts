@@ -2,6 +2,8 @@ import type { ToolDef, ToolResult } from "../types.ts";
 
 export interface MCPClient {
   readonly pid: number | null;
+  /** Absolute executable actually launched for a stdio server (after PATH resolution). */
+  readonly resolvedCommand?: string | null;
   connect(): Promise<void>;
   listTools(): Promise<ToolDef[]>;
   callTool(name: string, args: unknown, timeoutMs: number): Promise<ToolResult>;
