@@ -1,13 +1,24 @@
-export type MCPTransport = "stdio" | "streamable_http";
+export type MCPTransport = "stdio" | "streamable_http" | "connector";
 
 export type MCPStatus =
   | "disabled"
+  | "discovered"
+  | "pending_approval"
   | "disconnected"
   | "starting"
   | "connected"
   | "reconnecting"
   | "stopping"
   | "error";
+
+export type ServerSource = "manual" | "manifest" | "connector";
+
+/** Metadata an application publishes about itself in its registration manifest. */
+export interface ServerApplication {
+  name: string;
+  version?: string;
+  extensionType?: string;
+}
 
 export type PermissionMode = "allow" | "ask" | "deny";
 
@@ -29,6 +40,14 @@ export interface HttpConnection {
   verifyTls?: boolean;
 }
 
+/**
+ * Inbound connector: the application dials the bridge over a WebSocket, so there is nothing to
+ * launch and no URL to poll. Only the endpoint is recorded, for display and diagnostics.
+ */
+export interface ConnectorConnection {
+  endpoint?: string;
+}
+
 export interface ToolPermission {
   enabled: boolean;
   permission: PermissionMode;
@@ -41,7 +60,18 @@ export interface MCPServerConfig {
   enabled: boolean;
   visibility: Visibility;
   transport: MCPTransport;
-  connection: StdioConnection | HttpConnection;
+  connection: StdioConnection | HttpConnection | ConnectorConnection;
+  /** `manual` for hand-added servers; `manifest` for discovered registrations. */
+  source?: ServerSource;
+  /** False until the user approves a discovered manifest (approval is bound to `manifestHash`). */
+  approved?: boolean;
+  application?: ServerApplication;
+  capabilities?: string[];
+  manifestPath?: string;
+  /** SHA-256 of the execution-relevant fields; a change requires re-approval. */
+  manifestHash?: string;
+  /** The manifest file disappeared; the record is kept so approval is not silently lost. */
+  manifestMissing?: boolean;
   startupTimeoutMs?: number;
   toolTimeoutMs?: number;
   idleTimeoutMs?: number;
@@ -104,10 +134,29 @@ export interface ToolView {
   permission: PermissionMode;
 }
 
+export interface DiscoverySettings {
+  enabled: boolean;
+  watchRegistrationDirectory: boolean;
+  /** Register manifests without asking. Approval still gates connecting, unless requireApproval is off. */
+  autoRegister: boolean;
+  requireApproval: boolean;
+  /** Explicit registration directory; empty means the per-platform default. */
+  directory?: string;
+}
+
+export interface ConnectionsSettings {
+  /** Connect approved servers on bridge startup. */
+  autoConnect: boolean;
+  autoReconnect: boolean;
+  maxRetries: number;
+}
+
 export interface BridgeSettings {
   baseUrl: string;
   model: string;
   maxRounds: number;
   toolTimeoutMs: number;
   requestTimeoutMs: number;
+  discovery?: DiscoverySettings;
+  connections?: ConnectionsSettings;
 }

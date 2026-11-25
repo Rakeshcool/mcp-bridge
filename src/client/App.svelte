@@ -7,11 +7,13 @@
   import ServerDetail from "./lib/ServerDetail.svelte";
   import BridgeView from "./lib/BridgeView.svelte";
   import ChatView from "./lib/ChatView.svelte";
+  import ApplicationsView from "./lib/ApplicationsView.svelte";
+  import DiscoveryBanner from "./lib/DiscoveryBanner.svelte";
 
   let state = $state<AppState | null>(null);
   let errorMessage = $state("");
   let busy = $state("");
-  let view = $state<"chat" | "servers" | "bridge">("chat");
+  let view = $state<"chat" | "apps" | "servers" | "bridge">("chat");
   let selectedId = $state("");
   let dialogOpen = $state(false);
   let dialogTarget = $state<ServerView | null>(null);
@@ -35,6 +37,9 @@
   );
   const detail = $derived(servers.find((server) => server.id === selectedId) ?? null);
   const connectedCount = $derived(servers.filter((server) => server.runtime.status === "connected").length);
+  // Manifests and connector applications both land in `servers` with approved === false, so the
+  // badge does not need to know which discovery path produced the entry.
+  const pendingApprovals = $derived((state?.servers ?? []).filter((server) => !server.approved).length);
   const totalTools = $derived(servers.reduce((sum, server) => sum + server.runtime.enabledToolCount, 0));
 
   let refreshTimer: ReturnType<typeof setTimeout> | undefined;
@@ -111,7 +116,7 @@
   onMount(() => {
     void refresh();
     const events = new EventSource("/api/events");
-    for (const type of ["status", "tools", "bridge", "activity", "log"]) {
+    for (const type of ["status", "tools", "bridge", "activity", "log", "discovery"]) {
       events.addEventListener(type, () => scheduleRefresh());
     }
     events.addEventListener("approval_requested", (event) => {
@@ -143,6 +148,18 @@
           }}>Chat</button
         >
         <button
+          class={view === "apps" ? "rounded-md bg-edge px-3 py-1.5 text-ink" : "rounded-md px-3 py-1.5 text-muted hover:text-ink"}
+          onclick={() => {
+            view = "apps";
+            selectedId = "";
+          }}
+        >
+          Applications
+          {#if pendingApprovals > 0}
+            <span class="ml-1 rounded-full bg-warn/25 px-1.5 py-0.5 text-[10px] text-warn">{pendingApprovals}</span>
+          {/if}
+        </button>
+        <button
           class={view === "servers" ? "rounded-md bg-edge px-3 py-1.5 text-ink" : "rounded-md px-3 py-1.5 text-muted hover:text-ink"}
           onclick={() => {
             view = "servers";
@@ -170,6 +187,15 @@
     {#if errorMessage}
       <div class="mb-4 rounded-lg border border-bad/40 bg-bad/10 px-4 py-3 text-sm text-bad">{errorMessage}</div>
     {/if}
+
+    <DiscoveryBanner
+      pending={pendingApprovals}
+      lastScanAt={state?.discovery?.lastScanAt ?? null}
+      onreview={() => {
+        view = "apps";
+        selectedId = "";
+      }}
+    />
 
     {#each approvals as approval (approval.id)}
       <div class="mb-3 flex flex-wrap items-center gap-3 rounded-lg border border-warn/40 bg-warn/10 px-4 py-3 text-sm">
@@ -255,6 +281,19 @@
           {/each}
         {/if}
       </div>
+    {:else if view === "apps"}
+      <ApplicationsView
+        appState={state}
+        {busy}
+        onrefresh={refresh}
+        onflash={flash}
+        onopen={(server) => (selectedId = server.id)}
+        onaction={(server, kind) => act(server, kind)}
+        onedit={(server) => {
+          dialogTarget = server;
+          dialogOpen = true;
+        }}
+      />
     {:else if view === "bridge"}
       <BridgeView appState={state} onrefresh={refresh} onflash={flash} />
     {:else}

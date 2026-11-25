@@ -166,6 +166,136 @@ the call only ran because an idle-stopped server was reconnected, for example
 `[mcp] tools/call blender__get_scene_info 96ms ok reconnect=yes`. Tool calls also appear in that server's
 Logs tab, which is where a client integration is usually diagnosed.
 
+### 5. Applications that register themselves
+
+An application (or its installer) can drop a JSON manifest into the registration directory instead of asking
+the user to hand-edit `data/servers.json`:
+
+```text
+Windows   %LOCALAPPDATA%\MCPBridge\servers\
+macOS     ~/Library/Application Support/MCPBridge/servers/
+Linux     ${XDG_DATA_HOME:-~/.local/share}/MCPBridge/servers/
+```
+
+Override with `MCP_BRIDGE_REGISTRATION_DIR` or `discovery.directory` in `data/bridge.json`. One file per
+application, id as the file name, for example `after-effects-2026.json`:
+
+```json
+{
+  "schemaVersion": 1,
+  "id": "after-effects-2026",
+  "name": "After Effects MCP",
+  "description": "MCP integration for Adobe After Effects 2026",
+  "version": "1.0.0",
+  "application": { "name": "Adobe After Effects", "version": "2026", "extensionType": "CEP" },
+  "connection": {
+    "transport": "stdio",
+    "command": "C:/Program Files/nodejs/node.exe",
+    "args": ["C:/AfterEffectsMCP/build/index.js"],
+    "cwd": "C:/AfterEffectsMCP",
+    "env": {},
+    "secretEnv": []
+  },
+  "capabilities": ["compositions", "layers", "animation"]
+}
+```
+
+`examples/registration-manifest.json` is a copy you can edit. A `streamable_http` manifest uses
+`connection.url`, optional `headers` and `secretHeaders` instead of `command`/`args`.
+
+**What the bridge does with it.** The directory is scanned on startup, on `fs.watch` events and every 15 s
+(synced folders drop events). Every manifest is validated before anything is recorded: schema version, id
+shape, a transport it can actually run, an **absolute** executable that exists, arguments as strings, no `..`
+segments, and no credential-looking keys — a manifest is plain text, so `TOKEN`/`KEY`/`SECRET`/`PASSWORD`
+values are rejected outright and must arrive through `secretEnv` plus the panel's secret store.
+
+Accepted manifests become registry entries with `"source": "manifest"` and `"approved": false`. That state
+is `pending_approval`: the server appears under **Applications**, but it cannot connect and exposes no tools
+until a user approves it (`MCP_APPROVAL_REQUIRED` from `POST /api/servers/:id/connect`). Approval is bound to
+a SHA-256 hash of the transport, command, arguments, cwd, env and secret names — not to the file — so editing
+documentation or capabilities keeps the approval, while changing what will be executed sends it back to
+`pending_approval`. Renaming the file is not an execution change either: the approval survives and the
+recorded path is refreshed. A rescan writes `data/servers.json` only when something actually changed, so the
+15 s loop is quiet. A manifest can never take over a hand-configured server with the same id; that shows up
+as a `conflict` in the scan report instead.
+
+**Settings** (`data/bridge.json`, edited from Applications → Discovery & connection policy):
+
+```json
+{
+  "discovery": {
+    "enabled": true,
+    "watchRegistrationDirectory": true,
+    "autoRegister": false,
+    "requireApproval": true,
+    "directory": "D:/registrations"
+  },
+  "connections": { "autoConnect": false, "autoReconnect": true, "maxRetries": 5 }
+}
+```
+
+`autoConnect` is off by default because the bridge has always connected lazily; `requireApproval` is on
+because discovery is not authorization. Reconnects back off at 1 s, 2 s, 4 s … capped at 30 s with jitter, and
+stop after `maxRetries`; a disabled server is never restarted.
+
+**Endpoints:** `GET /api/discovery` (directory, last scan, per-file outcome, pending list, ignored hashes),
+`POST /api/discovery/rescan`, `POST /api/discovery/:id/approve` (`{"connect":true}`), `POST
+/api/discovery/:id/reject`, `POST /api/discovery/:id/forget` (removes the record and ignores that exact
+manifest hash until it changes; the file is left in place). `GET /api/state` includes the same snapshot under
+`discovery`, and every change is also pushed as a `discovery` event on `/api/events`.
+
+Scan outcomes are reported per file: `registered`, `pending_approval`, `unchanged`, `updated`, `conflict`,
+`ignored` and `invalid` (with the reason). A registered manifest whose file disappears is marked
+`manifestMissing` in `servers.json` and kept, so an approval is not silently discarded.
+
+### 6. Host-application panels (WebSocket connector)
+
+Some applications are already running with their own UI — After Effects, with its CEP panel. They cannot be
+launched like a stdio server and they do not expose an HTTP endpoint, so the bridge also accepts inbound
+connections: the application's panel dials `ws://127.0.0.1:7800/ws/connector`, announces itself and its
+tools, and then answers tool calls as they arrive. `ConnectorClient` implements the same `MCPClient`
+interface as the stdio and HTTP transports, so approval, tool permissions, `/mcp`, `/api/tools` and
+`/v1/chat/completions` work for a panel exactly as they do for any other server.
+
+```jsonc
+// panel → bridge, first frame (one JSON object per text frame)
+{ "type": "register", "protocol": 1,
+  "server": { "id": "after-effects-panel", "name": "After Effects (panel)" },
+  "application": { "name": "Adobe After Effects", "version": "26.3", "extensionType": "CEP" },
+  "capabilities": ["compositions", "layers"],
+  "tools": [{ "name": "create-composition", "description": "…", "inputSchema": { "type": "object" } }] }
+
+// bridge → panel
+{ "type": "registered", "serverId": "after-effects-panel", "approved": false, "status": "pending_approval" }
+{ "type": "call", "id": 7, "name": "create-composition", "arguments": { "name": "Main" } }
+
+// panel → bridge
+{ "type": "result", "id": 7, "ok": true, "text": "{…}" }
+{ "type": "result", "id": 7, "ok": false, "error": "After Effects is busy" }
+{ "type": "tools", "tools": [ … ] }        // the panel's tool set changed
+```
+
+**Discovery still applies.** A new application is recorded with `"source": "connector"` and
+`"approved": false`; its 20 tools are held, it cannot connect, and `POST /api/servers/:id/connect` answers
+`MCP_APPROVAL_REQUIRED` until it is approved — from the same Applications view, with the same approve,
+reject and forget actions (`/api/discovery/:id/*` works for connector applications too). Approval survives
+restarts and panel reconnects; the panel is told immediately when its approval changes. While waiting, the
+socket stays open so approving it connects the app instantly, without reloading the panel.
+
+**Lifecycle.** A connector is never "started" by the bridge, so a failed connect is `MCP_CONNECTOR_OFFLINE`
+(409) rather than a crash, closing the panel reports `disconnected` (not `error`), and the restart policy is
+skipped: only the application can dial back in. A second connection from the same id replaces the first —
+after an AE restart, calls go to the newest panel.
+
+**Security.** The socket is loopback-only, frames are size-capped (8 MB), and the registration is validated
+before anything is recorded (protocol version, slug id, tool names, unique tool names, at most 512 tools). A
+connector may not take over an existing stdio/HTTP server id: it gets `MCP_CONNECTOR_CONFLICT`. Set
+`MCP_BRIDGE_CONNECTOR_TOKEN=<secret>` to require `?token=…` on the upgrade (the CEP panel has a token field);
+`MCP_BRIDGE_CONNECTOR=0` disables the endpoint entirely.
+
+The After Effects side of this is `after-effects-mcp/cep/` — install it with `npm run install-cep` in that
+folder, then open **Window → Extensions → MCP Bridge** in AE.
+
 ## Recipes (optional, any server)
 
 A **recipe** is a folder under `recipes/` with a `recipe.json`. It is either a list of **steps** (plain tool

@@ -1,6 +1,8 @@
 export type PermissionMode = "allow" | "ask" | "deny";
 export type ServerStatus =
   | "disabled"
+  | "discovered"
+  | "pending_approval"
   | "disconnected"
   | "starting"
   | "connected"
@@ -35,14 +37,27 @@ export interface LogEntry {
   message: string;
 }
 
+export interface ServerApplication {
+  name: string;
+  version?: string;
+  extensionType?: string;
+}
+
 export interface ServerView {
   id: string;
   name: string;
   description: string;
   enabled: boolean;
   visibility: "normal" | "hidden_until_mentioned";
-  transport: "stdio" | "streamable_http";
+  transport: "stdio" | "streamable_http" | "connector";
   connection: Record<string, any>;
+  source: "manual" | "manifest" | "connector";
+  approved: boolean;
+  application: ServerApplication | null;
+  capabilities: string[];
+  manifestPath: string | null;
+  manifestHash: string | null;
+  manifestMissing: boolean;
   startupTimeoutMs: number;
   toolTimeoutMs: number;
   idleTimeoutMs: number;
@@ -51,12 +66,68 @@ export interface ServerView {
   logs: LogEntry[];
 }
 
+export interface DiscoverySettings {
+  enabled: boolean;
+  watchRegistrationDirectory: boolean;
+  autoRegister: boolean;
+  requireApproval: boolean;
+  directory?: string;
+}
+
+export interface ConnectionsSettings {
+  autoConnect: boolean;
+  autoReconnect: boolean;
+  maxRetries: number;
+}
+
 export interface BridgeSettings {
   baseUrl: string;
   model: string;
   maxRounds: number;
   toolTimeoutMs: number;
   requestTimeoutMs: number;
+  discovery?: DiscoverySettings;
+  connections?: ConnectionsSettings;
+}
+
+export type DiscoveryOutcome =
+  | "registered"
+  | "pending_approval"
+  | "unchanged"
+  | "updated"
+  | "conflict"
+  | "ignored"
+  | "invalid";
+
+export interface DiscoveryEntry {
+  id: string;
+  name?: string;
+  manifestPath: string;
+  outcome: DiscoveryOutcome;
+  error?: string;
+  hash?: string;
+  application?: ServerApplication | null;
+  capabilities?: string[];
+}
+
+export interface PendingRegistration {
+  id: string;
+  name: string;
+  manifestPath: string | null;
+  application: ServerApplication | null;
+  capabilities: string[];
+  hash: string | null;
+}
+
+export interface DiscoveryState {
+  directory: string;
+  directoryAvailable: boolean;
+  enabled: boolean;
+  watching: boolean;
+  lastScanAt: string | null;
+  entries: DiscoveryEntry[];
+  pending: PendingRegistration[];
+  ignored: Record<string, string>;
 }
 
 export interface UpstreamStatus {
@@ -109,6 +180,21 @@ export interface ApprovalRequest {
   timeoutMs: number;
 }
 
+export interface ConnectorState {
+  path: string;
+  protocol: number;
+  enabled: boolean;
+  tokenRequired: boolean;
+  connections: Array<{
+    serverId: string;
+    application: { name: string; version?: string; extensionType?: string } | null;
+    address: string | null;
+    connectedAt: string;
+    tools: number;
+  }>;
+  lastError: { at: string; message: string } | null;
+}
+
 export interface AppState {
   servers: ServerView[];
   bridge: BridgeSettings;
@@ -116,6 +202,9 @@ export interface AppState {
   approvals: ApprovalRequest[];
   activity: ActivityRecord[];
   catalog: unknown[];
+  discovery: DiscoveryState | null;
+  /** Inbound WebSocket applications (the After Effects CEP panel), from GET /api/state. */
+  connector: ConnectorState | null;
   /** Where other MCP clients connect, as published by GET /api/state. */
   mcp: { path: string; protocolVersion: string; transport: string; sse: boolean };
   platform: string;
@@ -155,6 +244,10 @@ export function statusLabel(status: ServerStatus): string {
   switch (status) {
     case "connected":
       return "Connected";
+    case "discovered":
+      return "Discovered";
+    case "pending_approval":
+      return "Approval required";
     case "starting":
       return "Starting";
     case "reconnecting":
@@ -174,6 +267,10 @@ export function statusClass(status: ServerStatus): string {
   switch (status) {
     case "connected":
       return "text-ok";
+    case "pending_approval":
+      return "text-warn";
+    case "discovered":
+      return "text-accent";
     case "starting":
     case "reconnecting":
     case "stopping":
@@ -189,6 +286,10 @@ export function statusDot(status: ServerStatus): string {
   switch (status) {
     case "connected":
       return "bg-ok";
+    case "pending_approval":
+      return "bg-warn";
+    case "discovered":
+      return "bg-accent";
     case "starting":
     case "reconnecting":
     case "stopping":
@@ -200,8 +301,20 @@ export function statusDot(status: ServerStatus): string {
   }
 }
 
+/** Where a server is reached, for display: a command, the connector socket, or a URL. */
+export function transportEndpoint(server: Pick<ServerView, "transport" | "connection">): string {
+  if (server.transport === "connector") {
+    const host = typeof location !== "undefined" ? location.host : "127.0.0.1:7800";
+    return `ws://${host}${server.connection.endpoint ?? "/ws/connector"}`;
+  }
+  if (server.transport === "stdio") return String(server.connection.command ?? "");
+  return String(server.connection.url ?? "");
+}
+
 export function transportLabel(transport: string): string {
-  return transport === "stdio" ? "Local stdio" : "Remote HTTP";
+  if (transport === "stdio") return "Local stdio";
+  if (transport === "connector") return "Inbound connector";
+  return "Remote HTTP";
 }
 
 export function formatTime(value: string | null): string {

@@ -1,9 +1,17 @@
 import fs from "node:fs";
 import path from "node:path";
 import { DATA_DIR, ensureDataDir } from "./paths.ts";
+import type { HttpConnection, MCPServerConfig, StdioConnection } from "./types.ts";
 
 const FILE = path.join(DATA_DIR, "secrets.json");
 let cache: Record<string, string> | null = null;
+
+/** Names that belong in `data/secrets.json`, never in a server entry or a manifest. */
+const SECRET_KEY = /(TOKEN|SECRET|PASSWORD|PASSWD|API[_-]?KEY|PRIVATE[_-]?KEY|CREDENTIAL|AUTH)/i;
+
+export function isSecretKey(name: string): boolean {
+  return SECRET_KEY.test(name);
+}
 
 function load(): Record<string, string> {
   if (cache) return cache;
@@ -19,6 +27,8 @@ function load(): Record<string, string> {
 function persist(): void {
   ensureDataDir();
   const tmp = `${FILE}.${process.pid}.tmp`;
+  // 0600: the file holds bearer tokens and bot credentials in the clear, so it
+  // must not be group/world readable even on a shared machine.
   fs.writeFileSync(tmp, JSON.stringify(load(), null, 2), { mode: 0o600 });
   fs.renameSync(tmp, FILE);
 }
@@ -64,6 +74,47 @@ export function deleteServerSecrets(serverId: string): void {
     }
   }
   if (changed) persist();
+}
+
+/**
+ * Moves credentials that were hand-pasted into `data/servers.json` into
+ * `data/secrets.json`. Older configs stored a bot token inline in
+ * `connection.env`; the panel promises that secrets never live there, so those
+ * values are relocated on load and the server keeps working through `secretEnv`.
+ * Returns the number of values moved.
+ */
+export function migrateInlineSecrets(servers: MCPServerConfig[]): number {
+  let moved = 0;
+  for (const server of servers) {
+    if (server.transport === "stdio") {
+      const conn = server.connection as StdioConnection;
+      const env = conn.env ?? {};
+      const secretEnv = new Set(conn.secretEnv ?? []);
+      for (const [key, value] of Object.entries({ ...env })) {
+        if (!isSecretKey(key) || !value) continue;
+        setSecret(envRef(server.id, key), value);
+        delete env[key];
+        secretEnv.add(key);
+        moved += 1;
+      }
+      conn.env = env;
+      conn.secretEnv = [...secretEnv];
+    } else {
+      const conn = server.connection as HttpConnection;
+      const headers = conn.headers ?? {};
+      const secretHeaders = new Set(conn.secretHeaders ?? []);
+      for (const [key, value] of Object.entries({ ...headers })) {
+        if (!isSecretKey(key) || !value) continue;
+        setSecret(headerRef(server.id, key), value);
+        delete headers[key];
+        secretHeaders.add(key);
+        moved += 1;
+      }
+      conn.headers = headers;
+      conn.secretHeaders = [...secretHeaders];
+    }
+  }
+  return moved;
 }
 
 export function redact(input: string): string {

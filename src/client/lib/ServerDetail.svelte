@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { call, formatTime, statusClass, statusDot, statusLabel, transportLabel } from "./api.ts";
+  import { call, formatTime, statusClass, statusDot, statusLabel, transportEndpoint, transportLabel } from "./api.ts";
   import type { ServerView } from "./api.ts";
 
   interface Props {
@@ -77,17 +77,33 @@
             <dd class="mt-1">{server.visibility === "normal" ? "Always available" : "Hidden until @mentioned"}</dd>
           </div>
           <div class="rounded-lg border border-edge bg-panel-2 p-3">
-            <dt class="text-dim">Last connected</dt>
-            <dd class="mt-1">{formatTime(server.runtime.lastConnected)}</dd>
+            <dt class="text-dim">Registration</dt>
+            <dd class="mt-1">
+              {server.source === "manifest" ? "Discovered" : server.source === "connector" ? "Connector" : "Manual"}
+              {#if server.source === "manifest"}· {server.approved ? "approved" : "not approved"}{/if}
+            </dd>
           </div>
           <div class="rounded-lg border border-edge bg-panel-2 p-3">
-            <dt class="text-dim">Tool calls</dt>
-            <dd class="mt-1">{server.runtime.calls}</dd>
+            <dt class="text-dim">Application</dt>
+            <dd class="mt-1">
+              {server.application ? `${server.application.name}${server.application.version ? ` ${server.application.version}` : ""}` : "—"}
+            </dd>
+          </div>
+          {#if server.manifestPath}
+            <div class="col-span-2 rounded-lg border border-edge bg-panel-2 p-3">
+              <dt class="text-dim">Manifest{server.manifestMissing ? " (file removed)" : ""}</dt>
+              <dd class="mono mt-1 break-all text-[11px]">{server.manifestPath}</dd>
+              {#if server.manifestHash}<dd class="mono mt-1 text-[10px] text-dim">sha256 {server.manifestHash.slice(0, 32)}…</dd>{/if}
+            </div>
+          {/if}
+          <div class="rounded-lg border border-edge bg-panel-2 p-3">
+            <dt class="text-dim">Last connected</dt>
+            <dd class="mt-1">{formatTime(server.runtime.lastConnected)}</dd>
           </div>
           <div class="col-span-2 rounded-lg border border-edge bg-panel-2 p-3">
             <dt class="text-dim">{server.transport === "stdio" ? "Command" : "Endpoint"}</dt>
             <dd class="mono mt-1 break-all text-[11px]">
-              {server.transport === "stdio" ? server.connection.command : server.connection.url}
+              {transportEndpoint(server)}
               {#if server.transport === "stdio" && server.connection.args.length}
                 {#each server.connection.args as arg}
                   <span class="text-muted"> {arg}</span>
@@ -114,7 +130,8 @@
             <button
               class="rounded-md bg-accent/15 px-3 py-1.5 text-xs text-accent hover:bg-accent/25 disabled:opacity-50"
               onclick={() => onaction("connect")}
-              disabled={!server.enabled || busy.startsWith(server.id)}>Connect</button
+              title={server.approved ? undefined : "Approve this discovered server in Applications first"}
+              disabled={!server.enabled || !server.approved || busy.startsWith(server.id)}>Connect</button
             >
           {/if}
           <button class="rounded-md border border-edge px-3 py-1.5 text-xs text-muted hover:text-ink" onclick={onedit}>Edit configuration</button>

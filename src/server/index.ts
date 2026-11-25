@@ -1,11 +1,20 @@
 import http from "node:http";
 import { EventEmitter } from "node:events";
-import { loadBridgeSettings, loadConfig, saveBridgeSettings, saveConfig } from "./config.ts";
+import {
+  defaultConnectionsSettings,
+  defaultDiscoverySettings,
+  loadBridgeSettings,
+  loadConfig,
+  saveBridgeSettings,
+  saveConfig,
+} from "./config.ts";
 import { Registry } from "./registry.ts";
 import { ApprovalService } from "./approvals.ts";
 import { ActivityStore } from "./activity.ts";
 import { setLogRedactor } from "./logs.ts";
-import { redact } from "./secrets.ts";
+import { migrateInlineSecrets, redact } from "./secrets.ts";
+import { DiscoveryManager } from "./discovery.ts";
+import { CONNECTOR_PATH, ConnectorHub } from "./mcp/connector.ts";
 import { checkHost, handleApi, handleBridge, serveStatic } from "./api.ts";
 import { handleMcpEndpoint, MCP_ENDPOINT_PATH } from "./mcp/server.ts";
 import { DEFAULT_PORT } from "./constants.ts";
@@ -22,17 +31,47 @@ events.setMaxListeners(64);
 const config = loadConfig();
 let settings: BridgeSettings = loadBridgeSettings();
 
-const registry = new Registry(config.servers, events, () => {
-  saveConfig({ version: 1, servers: registry.servers });
-});
+// Configs written before the secretEnv round-trip carried credentials inline; move them out
+// before anything can log or copy the file. The Discord entry is the one this applies to here.
+if (migrateInlineSecrets(config.servers) > 0) saveConfig({ version: 1, servers: config.servers });
+
+// The connector hub is what turns a live panel socket into an `MCPClient`; the registry asks it
+// before ever launching anything, so a dialled-in application needs no process of its own.
+let connector: ConnectorHub | null = null;
+
+const registry = new Registry(
+  config.servers,
+  events,
+  () => {
+    saveConfig({ version: 1, servers: registry.servers });
+  },
+  () => settings.connections ?? defaultConnectionsSettings(),
+  (id) => connector?.take(id) ?? null,
+);
 const approvals = new ApprovalService(events);
 const activity = new ActivityStore(events);
+
+const discovery = new DiscoveryManager({
+  registry,
+  events,
+  getSettings: () => settings.discovery ?? defaultDiscoverySettings(),
+});
+
+connector = new ConnectorHub({
+  registry,
+  requireApproval: () => (settings.discovery ?? defaultDiscoverySettings()).requireApproval,
+  token: process.env.MCP_BRIDGE_CONNECTOR_TOKEN ?? "",
+  enabled: process.env.MCP_BRIDGE_CONNECTOR !== "0",
+  log: (level, message) => events.emit("event", { type: "log", data: { level, message, scope: "connector" } }),
+});
 
 const ctx = {
   registry,
   events,
   approvals,
   activity,
+  discovery,
+  connector,
   getSettings: () => settings,
   setSettings: (next: BridgeSettings) => {
     settings = next;
@@ -81,6 +120,8 @@ const server = http.createServer((req, res) => {
   })();
 });
 
+connector.attach(server);
+
 server.listen(PORT, "127.0.0.1", () => {
   const address = server.address();
   const actualPort = typeof address === "object" && address ? address.port : PORT;
@@ -88,6 +129,17 @@ server.listen(PORT, "127.0.0.1", () => {
   console.log(`[mcp-bridge] base_url  http://127.0.0.1:${actualPort}/v1`);
   console.log(`[mcp-bridge] mcp       http://127.0.0.1:${actualPort}${MCP_ENDPOINT_PATH}`);
   console.log(`[mcp-bridge] upstream  ${settings.baseUrl}`);
+  console.log(`[mcp-bridge] registrations ${discovery.directory()}`);
+  console.log(`[mcp-bridge] connector ws://127.0.0.1:${actualPort}${CONNECTOR_PATH}`);
+  discovery.start();
+  // Approved servers come back after a restart only when the user asked for it; the bridge
+  // has always connected lazily otherwise.
+  if (settings.connections?.autoConnect) {
+    for (const server of registry.servers) {
+      if (!server.enabled || !registry.isApproved(server) || server.manifestMissing) continue;
+      void registry.connect(server.id).catch(() => undefined);
+    }
+  }
   void upstreamStatus(settings.baseUrl).then((status) => {
     if (status.reachable) console.log(`[mcp-bridge] llama-server reachable, model: ${status.model || "(unknown)"}`);
     else console.warn(`[mcp-bridge] llama-server not reachable yet: ${status.error ?? "unknown error"}`);
@@ -99,6 +151,8 @@ async function shutdown(signal: string): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
   console.log(`[mcp-bridge] ${signal} received, stopping MCP processes…`);
+  discovery.stop();
+  connector?.stop();
   try {
     await registry.shutdown();
   } catch {

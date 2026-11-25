@@ -8,7 +8,17 @@ import { authRef, deleteServerSecrets, envRef, getSecret, headerRef, setSecret }
 import type { Registry } from "./registry.ts";
 import type { ApprovalService } from "./approvals.ts";
 import type { ActivityStore } from "./activity.ts";
-import type { BridgeSettings, HttpConnection, MCPServerConfig, StdioConnection, ToolResult } from "./types.ts";
+import type {
+  BridgeSettings,
+  ConnectorConnection,
+  HttpConnection,
+  MCPServerConfig,
+  StdioConnection,
+  ToolResult,
+} from "./types.ts";
+import type { ConnectorHub } from "./mcp/connector.ts";
+import { mergeConnectionsSettings, mergeDiscoverySettings } from "./config.ts";
+import type { DiscoveryManager } from "./discovery.ts";
 import { runChat } from "./bridge.ts";
 import { MCP_ENDPOINT_PATH } from "./mcp/server.ts";
 import { PROTOCOL_VERSION } from "./mcp/client.ts";
@@ -22,6 +32,10 @@ export interface ApiContext {
   activity: ActivityStore;
   getSettings: () => BridgeSettings;
   setSettings: (settings: BridgeSettings) => void;
+  /** Absent in tests that only exercise the MCP endpoint. */
+  discovery?: DiscoveryManager;
+  /** Inbound WebSocket transport for host-application panels; absent in unit tests. */
+  connector?: ConnectorHub;
 }
 
 const MASK = "••••";
@@ -78,6 +92,9 @@ function serverView(server: MCPServerConfig, registry: Registry): Record<string,
       env: conn.env ?? {},
       secretEnv: conn.secretEnv ?? [],
     };
+  } else if (server.transport === "connector") {
+    const conn = (server.connection ?? {}) as ConnectorConnection;
+    connection = { endpoint: conn.endpoint ?? "/ws/connector", direction: "inbound" };
   } else {
     const conn = server.connection as HttpConnection;
     connection = {
@@ -97,6 +114,13 @@ function serverView(server: MCPServerConfig, registry: Registry): Record<string,
     visibility: server.visibility,
     transport: server.transport,
     connection,
+    source: server.source ?? "manual",
+    approved: server.approved !== false,
+    application: server.application ?? null,
+    capabilities: server.capabilities ?? [],
+    manifestPath: server.manifestPath ?? null,
+    manifestHash: server.manifestHash ?? null,
+    manifestMissing: server.manifestMissing === true,
     startupTimeoutMs: server.startupTimeoutMs ?? 30000,
     toolTimeoutMs: server.toolTimeoutMs ?? 60000,
     idleTimeoutMs: server.idleTimeoutMs ?? 0,
@@ -149,6 +173,12 @@ async function handleServerRoutes(req: IncomingMessage, res: ServerResponse, seg
       extractSecrets(raw, id);
       const next = validateServerInput({ ...raw, createdAt: server.createdAt }, [], false);
       next.id = id;
+      // Saving a discovered server by hand makes it a manual server: the manifest no longer
+      // owns it, so a later scan reports a conflict instead of silently reverting the edit.
+      if (server.source === "manifest") {
+        next.source = "manual";
+        next.approved = true;
+      }
       // The editor does not send per-tool settings; keep whatever the Tools tab configured.
       if (!raw.tools && server.tools) next.tools = server.tools;
       const wasConnected = registry.view(id).status === "connected";
@@ -250,6 +280,8 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
         approvals: ctx.approvals.list(),
         activity: ctx.activity.list().slice(0, 25),
         catalog: ctx.registry.catalog(),
+        discovery: ctx.discovery ? ctx.discovery.state() : null,
+        connector: ctx.connector ? ctx.connector.info() : null,
         mcp: { path: MCP_ENDPOINT_PATH, protocolVersion: PROTOCOL_VERSION, transport: "streamable-http", sse: false },
         platform: process.platform,
       });
@@ -281,11 +313,88 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
           maxRounds: Math.min(Math.max(Number(raw.maxRounds ?? current.maxRounds) || 1, 1), 12),
           toolTimeoutMs: Math.min(Math.max(Number(raw.toolTimeoutMs ?? current.toolTimeoutMs) || 1000, 1000), 600000),
           requestTimeoutMs: Math.min(Math.max(Number(raw.requestTimeoutMs ?? current.requestTimeoutMs) || 30000, 5000), 1800000),
+          discovery: current.discovery,
+          connections: current.connections,
         };
+        if (raw.discovery !== undefined) next.discovery = mergeDiscoverySettings(raw.discovery, current.discovery);
+        if (raw.connections !== undefined) next.connections = mergeConnectionsSettings(raw.connections, current.connections);
         ctx.setSettings(next);
         sendJson(res, 200, { settings: next, upstream: await upstreamStatus(next.baseUrl) });
         return;
       }
+    }
+
+    if (parts[0] === "discovery") {
+      const discovery = ctx.discovery;
+      if (!discovery) throw new ApiError("MCP_DISCOVERY_DISABLED", "Discovery is not running in this bridge", 404);
+      if (parts.length === 1 && req.method === "GET") {
+        sendJson(res, 200, { discovery: discovery.state() });
+        return;
+      }
+      if (parts.length === 2 && parts[1] === "rescan" && req.method === "POST") {
+        sendJson(res, 200, { discovery: await discovery.scan() });
+        return;
+      }
+      if (parts.length === 3 && req.method === "POST") {
+        const id = decodeURIComponent(parts[1]);
+        const action = parts[2];
+        // An application that dialled in has no manifest to hash: the same approve/reject/forget
+        // actions work on its registry record, so the panel UI needs no second code path.
+        const connectorServer = ctx.registry.find(id);
+        const viaConnector = connectorServer?.source === "connector";
+        if (action === "approve") {
+          const raw = await readJson(req);
+          if (viaConnector) {
+            ctx.registry.setApproval(id, true);
+            let connectError: string | null = null;
+            if (raw?.connect !== false) {
+              try {
+                await ctx.registry.connect(id);
+              } catch (error) {
+                connectError = error instanceof Error ? error.message : String(error);
+              }
+            }
+            ctx.connector?.notifyApproval(id, true);
+            sendJson(res, 200, {
+              ok: true,
+              connectError,
+              discovery: discovery.state(),
+              connector: ctx.connector?.info() ?? null,
+            });
+            return;
+          }
+          const result = await discovery.approve(id, raw?.connect !== false);
+          if (!result.ok) throw new ApiError("MCP_SERVER_NOT_FOUND", result.error ?? `Unknown server: ${id}`, 404);
+          sendJson(res, 200, { ok: true, connectError: result.error ?? null, discovery: discovery.state() });
+          return;
+        }
+        if (action === "reject") {
+          if (viaConnector) {
+            ctx.registry.setApproval(id, false);
+            ctx.connector?.notifyApproval(id, false);
+            sendJson(res, 200, { ok: true, discovery: discovery.state(), connector: ctx.connector?.info() ?? null });
+            return;
+          }
+          const result = discovery.reject(id);
+          if (!result.ok) throw new ApiError("MCP_SERVER_NOT_FOUND", result.error ?? `Unknown server: ${id}`, 404);
+          sendJson(res, 200, { ok: true, discovery: discovery.state() });
+          return;
+        }
+        if (action === "forget") {
+          if (viaConnector) {
+            ctx.connector?.drop(id);
+            await ctx.registry.removeServer(id);
+            sendJson(res, 200, { ok: true, discovery: discovery.state(), connector: ctx.connector?.info() ?? null });
+            return;
+          }
+          const result = await discovery.forget(id);
+          if (!result.ok) throw new ApiError("MCP_SERVER_NOT_FOUND", result.error ?? `Unknown server: ${id}`, 404);
+          sendJson(res, 200, { ok: true, discovery: discovery.state() });
+          return;
+        }
+        throw new ApiError("MCP_NOT_FOUND", `Unknown discovery action: ${action}`, 404);
+      }
+      throw new ApiError("MCP_NOT_FOUND", `Unknown discovery route: ${url.pathname}`, 404);
     }
 
     if (parts[0] === "servers") {

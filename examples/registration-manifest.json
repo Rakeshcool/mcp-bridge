@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "id": "after-effects-2026",
+  "name": "After Effects MCP",
+  "description": "MCP integration for Adobe After Effects 2026",
+  "version": "1.0.0",
+  "application": {
+    "name": "Adobe After Effects",
+    "version": "2026",
+    "extensionType": "CEP"
+  },
+  "connection": {
+    "transport": "stdio",
+    "command": "C:/Program Files/nodejs/node.exe",
+    "args": ["C:/AfterEffectsMCP/build/index.js"],
+    "cwd": "C:/AfterEffectsMCP",
+    "env": {},
+    "secretEnv": []
+  },
+  "capabilities": ["compositions", "layers", "animation", "effects", "rendering"]
+}

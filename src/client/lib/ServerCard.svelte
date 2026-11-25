@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { statusClass, statusDot, statusLabel, transportLabel } from "./api.ts";
+  import { statusClass, statusDot, statusLabel, transportEndpoint, transportLabel } from "./api.ts";
   import type { ServerView } from "./api.ts";
 
   interface Props {
@@ -31,11 +31,12 @@
         {#if server.visibility === "hidden_until_mentioned"}
           <span class="rounded-md bg-edge px-1.5 py-0.5 text-[10px] text-muted">hidden until @mentioned</span>
         {/if}
+        {#if !server.approved}
+          <span class="rounded-md bg-warn/20 px-1.5 py-0.5 text-[10px] text-warn">needs approval</span>
+        {/if}
       </div>
       <p class="mt-1 line-clamp-2 text-xs text-muted">{server.description || "No description"}</p>
-      <p class="mono mt-1.5 truncate text-[11px] text-dim">
-        {server.transport === "stdio" ? server.connection.command : server.connection.url}
-      </p>
+      <p class="mono mt-1.5 truncate text-[11px] text-dim">{transportEndpoint(server)}</p>
     </button>
     <div class="shrink-0 text-right">
       <div class="flex items-center justify-end gap-1.5 text-xs {statusClass(server.runtime.status)}">
@@ -61,7 +62,8 @@
       <button
         class="rounded-md bg-accent/15 px-2.5 py-1 text-[11px] text-accent hover:bg-accent/25 disabled:opacity-50"
         onclick={() => onaction("connect")}
-        disabled={working || pending || !server.enabled}>Connect</button
+        title={server.approved ? undefined : "Approve this discovered server in Applications first"}
+        disabled={working || pending || !server.enabled || !server.approved}>Connect</button
       >
     {/if}
     <button class="rounded-md border border-edge px-2.5 py-1 text-[11px] text-muted hover:border-edge-2 hover:text-ink" onclick={onedit}>Edit</button>
