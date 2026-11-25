@@ -1,6 +1,7 @@
 import { ApiError, validateToolSchema } from "./validate.ts";
 import { upstreamChat } from "./upstream.ts";
 import type { Registry, CatalogEntry } from "./registry.ts";
+import { toolTimeoutFor } from "./registry.ts";
 import type { ApprovalService } from "./approvals.ts";
 import type { ActivityStore, ActivityRecord, StoredImage, ToolCallRecord } from "./activity.ts";
 import type { BridgeSettings } from "./types.ts";
@@ -183,7 +184,10 @@ export async function runChat(params: RunParams): Promise<BridgeRunResult> {
         } else {
           try {
             // The server can idle-stop while the model is thinking, between the catalog snapshot and this call.
-            const { result } = await registry.callToolWithReconnect(entry.serverId, entry.toolName, args, settings.toolTimeoutMs);
+            const { result } = await registry.callToolWithReconnect(
+              entry.serverId, entry.toolName, args,
+              toolTimeoutFor(registry.find(entry.serverId), settings.toolTimeoutMs),
+            );
             text = result.isError ? `Tool reported an error:\n${result.text}` : result.text;
             status = result.isError ? "error" : "ok";
             // The model only sees text; the panel shows a couple of thumbnails per call.

@@ -72,6 +72,16 @@ export function reconnectDelay(attempt: number, random: () => number = Math.rand
   return base + Math.round(random() * 250);
 }
 
+/**
+ * Timeout for one tool call: the owning server's own budget when it has one, otherwise the
+ * bridge-wide setting. A tool that renders in its host application needs minutes, while the
+ * global default can stay short for ordinary tools.
+ */
+export function toolTimeoutFor(server: MCPServerConfig | undefined, fallbackMs: number): number {
+  const own = server?.toolTimeoutMs;
+  return typeof own === "number" && Number.isFinite(own) && own > 0 ? own : fallbackMs;
+}
+
 export class Registry {
   servers: MCPServerConfig[];
   private events: EventEmitter;

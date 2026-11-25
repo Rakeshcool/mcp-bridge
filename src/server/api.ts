@@ -311,7 +311,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
           baseUrl: parsed.toString().replace(/\/$/, ""),
           model: typeof raw.model === "string" ? raw.model : current.model,
           maxRounds: Math.min(Math.max(Number(raw.maxRounds ?? current.maxRounds) || 1, 1), 12),
-          toolTimeoutMs: Math.min(Math.max(Number(raw.toolTimeoutMs ?? current.toolTimeoutMs) || 1000, 1000), 600000),
+          toolTimeoutMs: Math.min(Math.max(Number(raw.toolTimeoutMs ?? current.toolTimeoutMs) || 1000, 1000), 3600000),
           requestTimeoutMs: Math.min(Math.max(Number(raw.requestTimeoutMs ?? current.requestTimeoutMs) || 30000, 5000), 1800000),
           discovery: current.discovery,
           connections: current.connections,

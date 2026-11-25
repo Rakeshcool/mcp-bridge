@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { CatalogEntry, Registry } from "../registry.ts";
+import { toolTimeoutFor } from "../registry.ts";
 import type { ApprovalService } from "../approvals.ts";
 import type { ActivityStore, RoundRecord, StoredImage } from "../activity.ts";
 import type { BridgeSettings, ToolResult } from "../types.ts";
@@ -207,7 +208,7 @@ async function callTool(params: any, ctx: McpEndpointContext, trace: Trace): Pro
     // The server can idle-stop in the gap between resolving the tool and this call, most easily
     // while an `ask` approval is pending.
     const outcome = await ctx.registry.callToolWithReconnect(
-      entry.serverId, entry.toolName, args, ctx.getSettings().toolTimeoutMs, resolved.reconnected,
+      entry.serverId, entry.toolName, args, toolTimeoutFor(ctx.registry.find(entry.serverId), ctx.getSettings().toolTimeoutMs), resolved.reconnected,
     );
     result = outcome.result;
     trace.reconnected = outcome.reconnected;

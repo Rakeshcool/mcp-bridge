@@ -22,10 +22,14 @@ function asString(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
+// Upper bound for startup/tool timeouts. One hour: a tool that renders in the host application
+// legitimately blocks for minutes, while a genuinely stuck call still cannot wait forever.
+const MAX_TIMEOUT_MS = 60 * 60 * 1000;
+
 function clampTimeout(value: unknown, fallback: number): number {
   const num = typeof value === "number" ? value : Number(value);
   if (!Number.isFinite(num)) return fallback;
-  return Math.min(Math.max(Math.round(num), 1000), 900000);
+  return Math.min(Math.max(Math.round(num), 1000), MAX_TIMEOUT_MS);
 }
 
 function clampIdle(value: unknown, fallback: number): number {
