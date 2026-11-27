@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="assets/logo.png" alt="MCP Bridge" width="300">
+  <img src="assets/logo.png" alt="AFbridge MCP" width="300">
 </p>
 
-# MCP Bridge for llama.cpp
+# AFbridge MCP for llama.cpp
 
 A local service that gives a plain `llama-server` access to MCP tools — and gives any AI agent a direct,
 model-free way to call those same tools.
@@ -14,6 +14,12 @@ The bridge is **not tied to any product**: every tool is discovered from whateve
 configure — a local executable speaking stdio, or a remote Streamable HTTP endpoint — and names are
 namespaced `serverId__toolName`. Nothing in the runtime, the panel or the CLI knows about any particular
 vendor, product or tool. Copy entries from [`servers.example.json`](servers.example.json) to start.
+
+The name you see is **AFbridge MCP** — panel header, browser tab, CLI menu and this README. Everything a
+script or a shell already depends on keeps its old name on purpose: the package stays `llama-mcp-bridge`,
+the env vars stay `MCP_BRIDGE_*` (`MCP_BRIDGE_CONNECTOR`, `MCP_BRIDGE_CONNECTOR_TOKEN`), the log prefix
+stays `[mcp-bridge]`, the helper scripts keep their paths, and `serverInfo` on `/mcp` still reports
+`llama-mcp-bridge`. Only display text moved, so nothing you have written against it has to change.
 
 ```
 OpenAI client / panel ──/v1/chat/completions──►  bridge :7800  ──►  llama-server :8080
@@ -294,7 +300,7 @@ connector may not take over an existing stdio/HTTP server id: it gets `MCP_CONNE
 `MCP_BRIDGE_CONNECTOR=0` disables the endpoint entirely.
 
 The After Effects side of this is `after-effects-mcp/cep/` — install it with `npm run install-cep` in that
-folder, then open **Window → Extensions → MCP Bridge** in AE.
+folder, then open **Window → Extensions → AFbridge MCP** in AE.
 
 ## Recipes (optional, any server)
 

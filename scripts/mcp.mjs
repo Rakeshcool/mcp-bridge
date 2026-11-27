@@ -43,7 +43,7 @@ const DEFAULT_PORT = 7800;
 // arguments were written without a `--` terminator.
 const BRIDGE_ONLY_FLAGS = new Set(["--port", "--base", "--timeout", "--tool", "--server", "--transport", "--lines", "--help", "-h"]);
 
-const HELP = `mcp.mjs — drive the MCP bridge from any agent
+const HELP = `mcp.mjs — drive AFbridge MCP from any agent
 
 USAGE
   node scripts/mcp.mjs <command> [options]

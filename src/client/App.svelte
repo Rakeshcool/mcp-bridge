@@ -135,8 +135,8 @@
   <header class="sticky top-0 z-20 border-b border-edge bg-panel/95 backdrop-blur">
     <div class="mx-auto flex max-w-6xl items-center gap-5 px-6 py-3">
       <div class="flex items-center gap-2">
-        <img src="/logo-256.png" alt="MCP Bridge" class="h-8 w-auto" />
-        <h1 class="text-sm font-semibold tracking-wide">MCP Bridge</h1>
+        <img src="/logo-256.png" alt="AFbridge MCP" class="h-8 w-auto" />
+        <h1 class="text-sm font-semibold tracking-wide">AFbridge MCP</h1>
         <span class="text-xs text-dim">llama.cpp ⇄ MCP</span>
       </div>
       <nav class="flex gap-1 rounded-lg border border-edge bg-panel-2 p-0.5 text-xs">

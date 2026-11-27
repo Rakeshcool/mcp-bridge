@@ -40,7 +40,7 @@ function readState() {
 }
 
 function banner(state) {
-  const lines = ["", "  MCP Bridge"];
+  const lines = ["", "  AFbridge MCP"];
   if (state.running) {
     const servers = state.servers ?? [];
     const up = servers.filter((server) => server.status === "connected").length;
