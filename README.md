@@ -35,7 +35,7 @@ browser / CLI / any agent ──/api/tools/:name/call──► bridge ──► 
 
 ## Requirements
 
-- **Node 18+** to run (Node 24 recommended — the server runs TypeScript directly, no backend build step).
+- **Node 22.6+** to run the bridge itself (Node 24 recommended — the server runs TypeScript directly through Node's type stripping, so there is no backend build step; on Node 18 or 20 `npm start` dies with `ERR_UNKNOWN_FILE_EXTENSION`). `scripts/mcp.mjs` alone needs only Node 18+.
 - **Bun** optional, only for installing dependencies and the Vite build.
 - **llama.cpp** with `llama-server` running — needed **only** for model chat. Direct tool calls work without it.
 - Any MCP servers you want to expose: a local executable speaking stdio, or a remote Streamable HTTP endpoint.
@@ -282,7 +282,7 @@ interface as the stdio and HTTP transports, so approval, tool permissions, `/mcp
 ```
 
 **Discovery still applies.** A new application is recorded with `"source": "connector"` and
-`"approved": false`; its 20 tools are held, it cannot connect, and `POST /api/servers/:id/connect` answers
+`"approved": false`; its 27 tools are held, it cannot connect, and `POST /api/servers/:id/connect` answers
 `MCP_APPROVAL_REQUIRED` until it is approved — from the same Applications view, with the same approve,
 reject and forget actions (`/api/discovery/:id/*` works for connector applications too). Approval survives
 restarts and panel reconnects; the panel is told immediately when its approval changes. While waiting, the
